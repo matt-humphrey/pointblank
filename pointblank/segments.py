@@ -161,3 +161,86 @@ def seg_group(values: list[Any]) -> Segment:
             return Segment([values])
     else:
         raise ValueError("Must input a list of values for a segment.")
+
+
+def seg_range(start: int, stop: int | None = None, step: int = 1):
+    """
+    Create a segment group that incorporates all values within the specified range.
+
+    Many validation methods have a `segments=` argument that can be used to specify one or more
+    columns, or certain values within a column, to create segments for validation (e.g.,
+    [`col_vals_gt()`](`pointblank.Validate.col_vals_gt`),
+    [`col_vals_regex()`](`pointblank.Validate.col_vals_regex`), etc.). When passing in a column, or
+    a tuple with a column and certain values, a segment will be created for each individual value
+    within the column or given values. The `seg_range()` selector groups together all values for the
+    given column that fall in the specified range.
+
+    For example, if you were to create a segment for a column "Goals", investigating which players
+    kicked between 50 and 60 goals for the 2025 AFL Season, you could use `seg_range()` like so:
+
+    `segments=("Goals", pb.seg_range(50, 61))`
+
+    There will be a validation step created for every segment. Note that if there aren't any
+    segments created using `seg_range()` (or any other segment expression), the validation step will
+    fail to be evaluated during the interrogation process. Such a failure to evaluate will be
+    reported in the validation results but it won't affect the interrogation process overall
+    (i.e., the process won't be halted).
+
+    Parameters
+    ----------
+    start
+        The beginning of the range (inclusive). Note, if this is the only input parameter, the range
+        will extend from 0 to that value.
+    stop
+        The end of the range (non-inclusive).
+    step
+        The range will increment (or decrement) by this number.
+
+    Returns
+    -------
+    Segment
+        A `Segment` object, which can be used to combine values into a segment.
+
+    Examples
+    --------
+    ```{python}
+    #| echo: false
+    #| output: false
+    import pointblank as pb
+    pb.config(report_incl_header=False, report_incl_footer=False, preview_incl_header=False)
+    ```
+
+    It's the end of the 2025 AFL Season, and we want to fact-check a commentator who recently
+    claimed that all players who kicked 60+ goals across the season had an accuracy of more than 55%.
+    Rather than writing an exhaustive list of the top goal kickers to group into a segment, we can
+    implement the `seg_range()` function!
+
+    ```{python}
+    import pointblank as pb
+    import polars as pl
+
+    tbl = pl.DataFrame(
+        {
+            "Name": [
+                "Jeremy Cameron", "Jack Gunston", "Ben King", "Jamie Elliott", "Aaron Naughton",
+                "Riley Thilthorpe", "Mitch Georgiades", "Logan Morris", "Sam Darcy", "Jack Higgins"
+            ],
+            "Goals": [88, 73, 71, 60, 60, 60, 58, 53, 48, 46],
+            "Accuracy": [57.9, 56.6, 65.7, 56.6, 60, 63.8, 51.8, 60.2, 63.2, 63]
+        }
+    )
+
+    validation = (
+        pb.Validate(tbl)
+        .col_vals_gt("Accuracy", 55, segments=("Goals", seg_range(60, 100)))
+        .interrogate()
+    )
+
+    validation
+    ```
+    """
+    if step == 0:
+        raise ValueError("Step cannot be 0")
+    if stop is None:
+        start, stop = 0, start
+    return Segment([list(range(start, stop, step))])
