@@ -5,6 +5,7 @@ from typing import Any
 
 __all__ = [
     "seg_group",
+    "seg_range",
 ]
 
 
@@ -211,9 +212,9 @@ def seg_range(start: int, stop: int | None = None, step: int = 1):
     ```
 
     It's the end of the 2025 AFL Season, and we want to fact-check a commentator who recently
-    claimed that all players who kicked 60+ goals across the season had an accuracy of more than 55%.
-    Rather than writing an exhaustive list of the top goal kickers to group into a segment, we can
-    implement the `seg_range()` function!
+    claimed that all players who kicked 60+ goals across the season had an accuracy of more than
+    55%. Rather than writing an exhaustive list of the top goal kickers to group into a segment, we
+    can implement the `seg_range()` function!
 
     ```{python}
     import pointblank as pb

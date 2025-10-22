@@ -192,6 +192,7 @@ quartodoc:
         Combine multiple values into a single segment using `seg_*()` helper functions.
       contents:
         - name: seg_group
+        - name: seg_range
     - title: Interrogation and Reporting
       desc: >
         The validation plan is put into action when `interrogate()` is called. The workflow for

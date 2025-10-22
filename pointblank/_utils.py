@@ -699,6 +699,7 @@ def _get_api_text() -> str:
 
     segments_exported = [
         "seg_group",
+        "seg_range",
     ]
 
     interrogation_exported = [

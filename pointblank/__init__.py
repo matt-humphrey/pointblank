@@ -25,7 +25,7 @@ from pointblank.column import (
 from pointblank.datascan import DataScan, col_summary_tbl
 from pointblank.draft import DraftValidation
 from pointblank.schema import Schema
-from pointblank.segments import seg_group
+from pointblank.segments import seg_group, seg_range
 from pointblank.thresholds import Actions, FinalActions, Thresholds
 from pointblank.validate import (
     Validate,
@@ -80,6 +80,7 @@ __all__ = [
     "get_column_count",
     "get_row_count",
     "seg_group",
+    "seg_range",
     "send_slack_notification",
     # YAML functionality
     "yaml_interrogate",
