@@ -8,6 +8,7 @@ from pointblank.validate import (
 from pointblank.segments import (
     Segment,
     seg_group,
+    seg_range,
 )
 
 import polars as pl
@@ -45,6 +46,20 @@ def test_seg_group():
 def test_seg_group_invalid_input():
     with pytest.raises(ValueError, match="Must input a list of values for a segment"):
         seg_group("not a list")
+
+
+def test_seg_range():
+    seg1 = seg_range(5)
+    seg2 = seg_range(2, 5)
+    seg3 = seg_range(2, 10, 2)
+    assert seg1 == Segment([[0, 1, 2, 3, 4]])
+    assert seg2 == Segment([[2, 3, 4]])
+    assert seg3 == Segment([[2, 4, 6, 8]])
+
+
+def test_seg_range_invalid_input():
+    with pytest.raises(ValueError, match="Step cannot be 0"):
+        seg_range(1, 5, step=0)
 
 
 # TODO: expand to all tbl_types
@@ -214,3 +229,18 @@ def test_segments_with_multiple_seg_groups(tbl_type):
     assert validation.n_passed(i=1, scalar=True) == 7
     assert validation.n_passed(i=2, scalar=True) == 3
     assert validation.n_passed(i=3, scalar=True) == 2
+
+
+# TODO: expand to all tbl_types
+@pytest.mark.parametrize("tbl_type", ["pandas", "polars"])
+def test_segments_with_seg_range(tbl_type):
+    validation = (
+        Validate(data=load_dataset(dataset="small_table", tbl_type="polars"))
+        .col_vals_gt(
+            columns="d",
+            value=1000,
+            segments=("a", seg_range(0, 10, 2)),
+        )
+        .interrogate()
+    )
+    assert validation.n_passed(i=1, scalar=True) == 5
