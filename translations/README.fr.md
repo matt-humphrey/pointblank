@@ -2,7 +2,7 @@
 
 <a href="https://posit-dev.github.io/pointblank/"><img src="https://posit-dev.github.io/pointblank/assets/pointblank_logo.svg" width="75%"/></a>
 
-_La validation des données, élégante et performante_
+_Boîte à outils de validation de données pour évaluer et surveiller la qualité des données_
 
 [![Python Versions](https://img.shields.io/pypi/pyversions/pointblank.svg)](https://pypi.python.org/pypi/pointblank)
 [![PyPI](https://img.shields.io/pypi/v/pointblank)](https://pypi.org/project/pointblank/#history)
@@ -309,7 +309,7 @@ pb run validation.py --exit-code
 - **Sorties pratiques** : Obtenez exactement ce que vous avez besoin: comptages, extraits, résumés ou rapports complets
 - **Déploiement flexible** : Utilisez-le dans des notebooks, des scripts ou des pipelines de données
 - **Personnalisable** : Adaptez les étapes de validation et les rapports selon vos besoins spécifiques
-- **Internationalisation** : Les rapports peuvent être générés dans plus de 20 langues, incluant l'anglais, l'espagnol, le français et l'allemand
+- **Internationalisation** : Les rapports peuvent être générés dans 40 langues, incluant l'anglais, l'espagnol, le français et l'allemand
 
 ## Documentation et exemples
 

@@ -45,6 +45,7 @@ from pointblank._constants import (
 )
 from pointblank._constants_translations import (
     EXPECT_FAIL_TEXT,
+    NOTES_TEXT,
     STEP_REPORT_TEXT,
     VALIDATION_REPORT_TEXT,
 )
@@ -122,6 +123,7 @@ __all__ = [
     "write_file",
     "config",
     "connect_to_table",
+    "print_database_tables",
     "preview",
     "missing_vals_tbl",
     "get_action_metadata",
@@ -361,12 +363,16 @@ class PointblankConfig:
 
     report_incl_header: bool = True
     report_incl_footer: bool = True
+    report_incl_footer_timings: bool = True
+    report_incl_footer_notes: bool = True
     preview_incl_header: bool = True
 
     def __repr__(self):
         return (
             f"PointblankConfig(report_incl_header={self.report_incl_header}, "
             f"report_incl_footer={self.report_incl_footer}, "
+            f"report_incl_footer_timings={self.report_incl_footer_timings}, "
+            f"report_incl_footer_notes={self.report_incl_footer_notes}, "
             f"preview_incl_header={self.preview_incl_header})"
         )
 
@@ -378,6 +384,8 @@ global_config = PointblankConfig()
 def config(
     report_incl_header: bool = True,
     report_incl_footer: bool = True,
+    report_incl_footer_timings: bool = True,
+    report_incl_footer_notes: bool = True,
     preview_incl_header: bool = True,
 ) -> PointblankConfig:
     """
@@ -391,7 +399,13 @@ def config(
         threshold levels (if set).
     report_incl_footer
         Should the footer of the validation table report be displayed? The footer contains the
-        starting and ending times of the interrogation.
+        starting and ending times of the interrogation and any notes added to validation steps.
+    report_incl_footer_timings
+        Controls whether the validation timing information (start time, duration, and end time)
+        should be displayed in the footer. Only applies when `report_incl_footer=True`.
+    report_incl_footer_notes
+        Controls whether the notes from validation steps should be displayed in the footer. Only
+        applies when `report_incl_footer=True`.
     preview_incl_header
         Whether the header should be present in any preview table (generated via the
         [`preview()`](`pointblank.preview`) function).
@@ -405,6 +419,8 @@ def config(
     global global_config
     global_config.report_incl_header = report_incl_header  # pragma: no cover
     global_config.report_incl_footer = report_incl_footer  # pragma: no cover
+    global_config.report_incl_footer_timings = report_incl_footer_timings  # pragma: no cover
+    global_config.report_incl_footer_notes = report_incl_footer_notes  # pragma: no cover
     global_config.preview_incl_header = preview_incl_header  # pragma: no cover
 
 
@@ -3699,6 +3715,10 @@ class _ValidationInfo:
         The time the validation step was processed. This is in the ISO 8601 format in UTC time.
     proc_duration_s
         The duration of processing for the validation step in seconds.
+    notes
+        An ordered dictionary of notes/footnotes associated with the validation step. Each entry
+        contains both 'markdown' and 'text' versions of the note content. The dictionary preserves
+        insertion order, ensuring notes appear in a consistent sequence in reports and logs.
     """
 
     # Validation plan
@@ -3736,9 +3756,223 @@ class _ValidationInfo:
     val_info: dict[str, any] | None = None
     time_processed: str | None = None
     proc_duration_s: float | None = None
+    notes: dict[str, dict[str, str]] | None = None
 
     def get_val_info(self) -> dict[str, any]:
         return self.val_info
+
+    def _add_note(self, key: str, markdown: str, text: str | None = None) -> None:
+        """
+        Add a note/footnote to the validation step.
+
+        This internal method adds a note entry to the validation step's notes dictionary.
+        Notes are displayed as footnotes in validation reports and included in log output.
+
+        Parameters
+        ----------
+        key
+            A unique identifier for the note. If a note with this key already exists, it will
+            be overwritten.
+        markdown
+            The note content formatted with Markdown. This version is used for display in
+            HTML reports and other rich text formats.
+        text
+            The note content as plain text. This version is used for log files and text-based
+            output. If not provided, the markdown version will be used (with markdown formatting
+            intact).
+
+        Examples
+        --------
+        ```python
+        # Add a note about evaluation failure
+        validation_info._add_note(
+            key="eval_error",
+            markdown="Column expression evaluation **failed**",
+            text="Column expression evaluation failed"
+        )
+
+        # Add a note about LLM response
+        validation_info._add_note(
+            key="llm_response",
+            markdown="LLM validation returned `200` passing rows",
+            text="LLM validation returned 200 passing rows"
+        )
+        ```
+        """
+        # Initialize notes dictionary if it doesn't exist
+        if self.notes is None:
+            self.notes = {}
+
+        # Use markdown as text if text is not provided
+        if text is None:
+            text = markdown
+
+        # Add the note entry
+        self.notes[key] = {"markdown": markdown, "text": text}
+
+    def _get_notes(self, format: str = "dict") -> dict[str, dict[str, str]] | list[str] | None:
+        """
+        Get notes associated with this validation step.
+
+        Parameters
+        ----------
+        format
+            The format to return notes in:
+            - `"dict"`: Returns the full notes dictionary (default)
+            - `"markdown"`: Returns a list of markdown-formatted note values
+            - `"text"`: Returns a list of plain text note values
+            - `"keys"`: Returns a list of note keys
+
+        Returns
+        -------
+        dict, list, or None
+            The notes in the requested format, or `None` if no notes exist.
+
+        Examples
+        --------
+        ```python
+        # Get all notes as dictionary
+        notes = validation_info._get_notes()
+        # Returns: {'key1': {'markdown': '...', 'text': '...'}, ...}
+
+        # Get just markdown versions
+        markdown_notes = validation_info._get_notes(format="markdown")
+        # Returns: ['First note with **emphasis**', 'Second note']
+
+        # Get just plain text versions
+        text_notes = validation_info._get_notes(format="text")
+        # Returns: ['First note with emphasis', 'Second note']
+
+        # Get just the keys
+        keys = validation_info._get_notes(format="keys")
+        # Returns: ['key1', 'key2']
+        ```
+        """
+        if self.notes is None:
+            return None
+
+        if format == "dict":
+            return self.notes
+        elif format == "markdown":
+            return [note["markdown"] for note in self.notes.values()]
+        elif format == "text":
+            return [note["text"] for note in self.notes.values()]
+        elif format == "keys":
+            return list(self.notes.keys())
+        else:
+            raise ValueError(
+                f"Invalid format '{format}'. Must be one of: 'dict', 'markdown', 'text', 'keys'"
+            )
+
+    def _get_note(self, key: str, format: str = "dict") -> dict[str, str] | str | None:
+        """
+        Get a specific note by its key.
+
+        Parameters
+        ----------
+        key
+            The unique identifier of the note to retrieve.
+        format
+            The format to return the note in:
+            - `"dict"`: Returns `{'markdown': '...', 'text': '...'}` (default)
+            - `"markdown"`: Returns just the markdown string
+            - `"text"`: Returns just the plain text string
+
+        Returns
+        -------
+        dict, str, or None
+            The note in the requested format, or `None` if the note doesn't exist.
+
+        Examples
+        --------
+        ```python
+        # Get a specific note as dictionary
+        note = validation_info._get_note("threshold_info")
+        # Returns: {'markdown': 'Using **default** thresholds', 'text': '...'}
+
+        # Get just the markdown version
+        markdown = validation_info._get_note("threshold_info", format="markdown")
+        # Returns: 'Using **default** thresholds'
+
+        # Get just the text version
+        text = validation_info._get_note("threshold_info", format="text")
+        # Returns: 'Using default thresholds'
+        ```
+        """
+        if self.notes is None or key not in self.notes:
+            return None
+
+        note = self.notes[key]
+
+        if format == "dict":
+            return note
+        elif format == "markdown":
+            return note["markdown"]
+        elif format == "text":
+            return note["text"]
+        else:
+            raise ValueError(
+                f"Invalid format '{format}'. Must be one of: 'dict', 'markdown', 'text'"
+            )
+
+    def _has_notes(self) -> bool:
+        """
+        Check if this validation step has any notes.
+
+        Returns
+        -------
+        bool
+            `True` if the validation step has notes, `False` otherwise.
+
+        Examples
+        --------
+        ```python
+        if validation_info._has_notes():
+            print("This step has notes")
+        ```
+        """
+        return self.notes is not None and len(self.notes) > 0
+
+
+def _handle_connection_errors(e: Exception, connection_string: str) -> None:
+    """
+    Shared error handling for database connection failures.
+
+    Raises appropriate ConnectionError with helpful messages based on the exception.
+    """
+
+    error_str = str(e).lower()
+    backend_install_map = {
+        "duckdb": "pip install 'ibis-framework[duckdb]'",
+        "postgresql": "pip install 'ibis-framework[postgres]'",
+        "postgres": "pip install 'ibis-framework[postgres]'",
+        "mysql": "pip install 'ibis-framework[mysql]'",
+        "sqlite": "pip install 'ibis-framework[sqlite]'",
+        "bigquery": "pip install 'ibis-framework[bigquery]'",
+        "snowflake": "pip install 'ibis-framework[snowflake]'",
+    }
+
+    # Check if this is a missing backend dependency
+    for backend, install_cmd in backend_install_map.items():
+        if backend in error_str and ("not found" in error_str or "no module" in error_str):
+            raise ConnectionError(
+                f"Missing {backend.upper()} backend for Ibis. Install it with:\n"
+                f"  {install_cmd}\n\n"
+                f"Original error: {e}"
+            ) from e
+
+    # Generic connection error
+    raise ConnectionError(  # pragma: no cover
+        f"Failed to connect using: {connection_string}\n"
+        f"Error: {e}\n\n"
+        f"Supported connection string formats:\n"
+        f"- DuckDB: 'duckdb:///path/to/file.ddb'\n"
+        f"- SQLite: 'sqlite:///path/to/file.db'\n"
+        f"- PostgreSQL: 'postgresql://user:pass@host:port/db'\n"
+        f"- MySQL: 'mysql://user:pass@host:port/db'\n"
+        f"- BigQuery: 'bigquery://project/dataset'\n"
+        f"- Snowflake: 'snowflake://user:pass@account/db/schema'"
+    ) from e
 
 
 def connect_to_table(connection_string: str) -> Any:
@@ -3820,7 +4054,11 @@ def connect_to_table(connection_string: str) -> Any:
     pip install 'ibis-framework[duckdb]'    # for DuckDB
     pip install 'ibis-framework[postgres]'  # for PostgreSQL
     ```
+    See Also
+    --------
+    print_database_tables : List all available tables in a database for discovery
     """
+
     # Check if Ibis is available
     if not _is_lib_present(lib_name="ibis"):
         raise ImportError(
@@ -3834,14 +4072,10 @@ def connect_to_table(connection_string: str) -> Any:
     if "::" not in connection_string:
         # Try to connect to get available tables for helpful error message
         try:
-            # Extract the base connection string (without table name)
             base_connection = connection_string
-
-            # Connect to the database
             conn = ibis.connect(base_connection)
 
-            # Get list of available tables
-            try:
+            try:  # pragma: no cover
                 available_tables = conn.list_tables()
             except Exception:  # pragma: no cover
                 available_tables = []
@@ -3858,7 +4092,6 @@ def connect_to_table(connection_string: str) -> Any:
                     f"  {connection_string}::TABLE_NAME\n\n"
                     f"Examples:\n"
                 )
-                # Add examples with first few table names
                 for table in available_tables[:3]:
                     error_msg += f"  {connection_string}::{table}\n"
             else:
@@ -3873,43 +4106,8 @@ def connect_to_table(connection_string: str) -> Any:
 
         except Exception as e:
             if isinstance(e, ValueError):
-                raise  # Re-raise our custom ValueError
-
-            # Check for backend-specific errors and provide installation guidance
-            error_str = str(e).lower()
-            backend_install_map = {
-                "duckdb": "pip install 'ibis-framework[duckdb]'",
-                "postgresql": "pip install 'ibis-framework[postgres]'",
-                "postgres": "pip install 'ibis-framework[postgres]'",
-                "mysql": "pip install 'ibis-framework[mysql]'",
-                "sqlite": "pip install 'ibis-framework[sqlite]'",
-                "bigquery": "pip install 'ibis-framework[bigquery]'",
-                "snowflake": "pip install 'ibis-framework[snowflake]'",
-            }
-
-            # Check if this is a missing backend dependency
-            for backend, install_cmd in backend_install_map.items():  # pragma: no cover
-                if backend in error_str and ("not found" in error_str or "no module" in error_str):
-                    raise ConnectionError(
-                        f"Missing {backend.upper()} backend for Ibis. Install it with:\n"
-                        f"  {install_cmd}\n\n"
-                        f"Original error: {e}\n\n"
-                        f"Supported connection string formats:\n"
-                        f"- DuckDB: 'duckdb:///path/to/file.ddb::table_name'\n"
-                        f"- SQLite: 'sqlite:///path/to/file.db::table_name'\n"
-                        f"- PostgreSQL: 'postgresql://user:pass@host:port/db::table_name'\n"
-                        f"- MySQL: 'mysql://user:pass@host:port/db::table_name'\n"
-                        f"- BigQuery: 'bigquery://project/dataset::table_name'\n"
-                        f"- Snowflake: 'snowflake://user:pass@account/db/schema::table_name'\n"
-                        f"\nNote: Use '::table_name' to specify the table within the database."
-                    ) from e
-
-            # Generic connection error
-            raise ConnectionError(  # pragma: no cover
-                f"Failed to connect to database using connection string: {connection_string}\n"
-                f"Error: {e}\n\n"
-                f"No table specified. Use the format: {connection_string}::TABLE_NAME"
-            ) from e
+                raise
+            _handle_connection_errors(e, connection_string)
 
     # Split connection string and table name
     try:
@@ -3922,32 +4120,14 @@ def connect_to_table(connection_string: str) -> Any:
         conn = ibis.connect(base_connection)
         table = conn.table(table_name)
         return table
-
     except Exception as e:
-        # Check for backend-specific errors and provide installation guidance
         error_str = str(e).lower()
-        backend_install_map = {
-            "duckdb": "pip install 'ibis-framework[duckdb]'",
-            "postgresql": "pip install 'ibis-framework[postgres]'",
-            "postgres": "pip install 'ibis-framework[postgres]'",
-            "mysql": "pip install 'ibis-framework[mysql]'",
-            "sqlite": "pip install 'ibis-framework[sqlite]'",
-            "bigquery": "pip install 'ibis-framework[bigquery]'",
-            "snowflake": "pip install 'ibis-framework[snowflake]'",
-        }
 
-        # Check if this is a missing backend dependency
-        for backend, install_cmd in backend_install_map.items():
-            if backend in error_str and ("not found" in error_str or "no module" in error_str):
-                raise ConnectionError(
-                    f"Missing {backend.upper()} backend for Ibis. Install it with:\n"
-                    f"  {install_cmd}\n\n"
-                    f"Original error: {e}"
-                ) from e
-
-        # Check if table doesn't exist
-        if "table" in error_str and ("not found" in error_str or "does not exist" in error_str):
-            # Try to get available tables for helpful message
+        # Check if this is a "table not found" error
+        if "table" in error_str and (
+            "not found" in error_str or "does not exist" in error_str or "not exist" in error_str
+        ):
+            # Try to get available tables for a helpful error message
             try:  # pragma: no cover
                 available_tables = conn.list_tables()
                 if available_tables:
@@ -3955,23 +4135,79 @@ def connect_to_table(connection_string: str) -> Any:
                     raise ValueError(
                         f"Table '{table_name}' not found in database.\n\n"
                         f"Available tables:\n{table_list}\n\n"
-                        f"Check the table name and try again with:\n"
-                        f"  {base_connection}::CORRECT_TABLE_NAME"
+                        f"Connection: {base_connection}"
                     ) from e
-                else:
-                    raise ValueError(
-                        f"Table '{table_name}' not found and no tables available in database."
-                    ) from e
+            except ValueError:
+                # Re-raise the table-specific ValueError
+                raise
             except Exception:
-                raise ValueError(
-                    f"Table '{table_name}' not found in database. "
-                    f"Check the table name and connection string."
-                ) from e
+                # If we can't list tables, just raise a simple error
+                pass
 
-        # Generic connection error
-        raise ConnectionError(
-            f"Failed to connect to table '{table_name}' using: {base_connection}\nError: {e}"
-        ) from e
+            raise ValueError(
+                f"Table '{table_name}' not found in database.\n"
+                f"Connection: {base_connection}\n\n"
+                f"Original error: {e}"
+            ) from e
+
+        # For other errors, use the generic connection error handler
+        _handle_connection_errors(e, base_connection)
+
+
+def print_database_tables(connection_string: str) -> list[str]:
+    """
+    List all tables in a database from a connection string.
+
+    The `print_database_tables()` function connects to a database and returns a list of all
+    available tables. This is particularly useful for discovering what tables exist in a database
+    before connecting to a specific table with `connect_to_table(). The function automatically
+    filters out temporary Ibis tables (memtables) to show only user tables. It supports all database
+    backends available through Ibis, including DuckDB, SQLite, PostgreSQL, MySQL, BigQuery, and
+    Snowflake.
+
+    Parameters
+    ----------
+    connection_string
+        A database connection string *without* the `::table_name` suffix. Example:
+        `"duckdb:///path/to/database.ddb"`.
+
+    Returns
+    -------
+    list[str]
+        List of table names, excluding temporary Ibis tables.
+
+    See Also
+    --------
+    connect_to_table : Connect to a database table with full connection string documentation
+    """
+    # Check if connection string includes table specification (which is not allowed)
+    if "::" in connection_string:
+        raise ValueError(
+            "Connection string should not include table specification (::table_name).\n"
+            f"You've supplied: {connection_string}\n"
+            f"Expected format: 'duckdb:///path/to/database.ddb' (without ::table_name)"
+        )
+
+    # Check if Ibis is available
+    if not _is_lib_present(lib_name="ibis"):
+        raise ImportError(
+            "The Ibis library is not installed but is required for database connection strings.\n"
+            "Install it with: pip install 'ibis-framework[duckdb]' (or other backend as needed)"
+        )
+
+    import ibis
+
+    try:
+        # Connect to database
+        conn = ibis.connect(connection_string)
+        # Get all tables and filter out temporary Ibis tables
+        all_tables = conn.list_tables()
+        user_tables = [t for t in all_tables if "memtable" not in t]
+
+        return user_tables
+
+    except Exception as e:
+        _handle_connection_errors(e, connection_string)
 
 
 @dataclass
@@ -4253,6 +4489,16 @@ class Validate:
     - Vietnamese (`"vi"`)
     - Indonesian (`"id"`)
     - Ukrainian (`"uk"`)
+    - Bulgarian (`"bg"`)
+    - Croatian (`"hr"`)
+    - Estonian (`"et"`)
+    - Hungarian (`"hu"`)
+    - Irish (`"ga"`)
+    - Latvian (`"lv"`)
+    - Lithuanian (`"lt"`)
+    - Maltese (`"mt"`)
+    - Slovak (`"sk"`)
+    - Slovenian (`"sl"`)
     - Hebrew (`"he"`)
     - Thai (`"th"`)
     - Persian (`"fa"`)
@@ -7718,6 +7964,382 @@ class Validate:
 
         return self
 
+    def col_vals_increasing(
+        self,
+        columns: str | list[str] | Column | ColumnSelector | ColumnSelectorNarwhals,
+        allow_stationary: bool = False,
+        decreasing_tol: float | None = None,
+        na_pass: bool = False,
+        pre: Callable | None = None,
+        segments: SegmentSpec | None = None,
+        thresholds: int | float | bool | tuple | dict | Thresholds = None,
+        actions: Actions | None = None,
+        brief: str | bool | None = None,
+        active: bool = True,
+    ) -> Validate:
+        """
+        Are column data increasing by row?
+
+        The `col_vals_increasing()` validation method checks whether column values in a table are
+        increasing when moving down a table. There are options for allowing missing values in the
+        target column, allowing stationary phases (where consecutive values don't change), and even
+        one for allowing decreasing movements up to a certain threshold. This validation will
+        operate over the number of test units that is equal to the number of rows in the table
+        (determined after any `pre=` mutation has been applied).
+
+        Parameters
+        ----------
+        columns
+            A single column or a list of columns to validate. Can also use
+            [`col()`](`pointblank.col`) with column selectors to specify one or more columns. If
+            multiple columns are supplied or resolved, there will be a separate validation step
+            generated for each column.
+        allow_stationary
+            An option to allow pauses in increasing values. For example, if the values for the test
+            units are `[80, 82, 82, 85, 88]` then the third unit (`82`, appearing a second time)
+            would be marked as failing when `allow_stationary` is `False`. Using
+            `allow_stationary=True` will result in all the test units in `[80, 82, 82, 85, 88]` to
+            be marked as passing.
+        decreasing_tol
+            An optional threshold value that allows for movement of numerical values in the negative
+            direction. By default this is `None` but using a numerical value will set the absolute
+            threshold of negative travel allowed across numerical test units. Note that setting a
+            value here also has the effect of setting `allow_stationary` to `True`.
+        na_pass
+            Should any encountered None, NA, or Null values be considered as passing test units? By
+            default, this is `False`. Set to `True` to pass test units with missing values.
+        pre
+            An optional preprocessing function or lambda to apply to the data table during
+            interrogation. This function should take a table as input and return a modified table.
+            Have a look at the *Preprocessing* section for more information on how to use this
+            argument.
+        segments
+            An optional directive on segmentation, which serves to split a validation step into
+            multiple (one step per segment). Can be a single column name, a tuple that specifies a
+            column name and its corresponding values to segment on, or a combination of both
+            (provided as a list). Read the *Segmentation* section for usage information.
+        thresholds
+            Set threshold failure levels for reporting and reacting to exceedences of the levels.
+            The thresholds are set at the step level and will override any global thresholds set in
+            `Validate(thresholds=...)`. The default is `None`, which means that no thresholds will
+            be set locally and global thresholds (if any) will take effect. Look at the *Thresholds*
+            section for information on how to set threshold levels.
+        actions
+            Optional actions to take when the validation step(s) meets or exceeds any set threshold
+            levels. If provided, the [`Actions`](`pointblank.Actions`) class should be used to
+            define the actions.
+        brief
+            An optional brief description of the validation step that will be displayed in the
+            reporting table. You can use the templating elements like `"{step}"` to insert
+            the step number, or `"{auto}"` to include an automatically generated brief. If `True`
+            the entire brief will be automatically generated. If `None` (the default) then there
+            won't be a brief.
+        active
+            A boolean value indicating whether the validation step should be active. Using `False`
+            will make the validation step inactive (still reporting its presence and keeping indexes
+            for the steps unchanged).
+
+        Returns
+        -------
+        Validate
+            The `Validate` object with the added validation step.
+
+        Examples
+        --------
+        ```{python}
+        #| echo: false
+        #| output: false
+        import pointblank as pb
+        pb.config(report_incl_header=False, report_incl_footer=False, preview_incl_header=False)
+        ```
+
+        For the examples here, we'll use a simple Polars DataFrame with a numeric column (`a`). The
+        table is shown below:
+
+        ```{python}
+        import pointblank as pb
+        import polars as pl
+
+        tbl = pl.DataFrame(
+            {
+                "a": [1, 2, 3, 4, 5, 6],
+                "b": [1, 2, 2, 3, 4, 5],
+                "c": [1, 2, 1, 3, 4, 5],
+            }
+        )
+
+        pb.preview(tbl)
+        ```
+
+        Let's validate that values in column `a` are increasing. We'll determine if this validation
+        had any failing test units (there are six test units, one for each row).
+
+        ```{python}
+        validation = (
+            pb.Validate(data=tbl)
+            .col_vals_increasing(columns="a")
+            .interrogate()
+        )
+
+        validation
+        ```
+
+        The validation passed as all values in column `a` are increasing. Now let's check column
+        `b` which has a stationary value:
+
+        ```{python}
+        validation = (
+            pb.Validate(data=tbl)
+            .col_vals_increasing(columns="b")
+            .interrogate()
+        )
+
+        validation
+        ```
+
+        This validation fails at the third row because the value `2` is repeated. If we want to
+        allow stationary values, we can use `allow_stationary=True`:
+
+        ```{python}
+        validation = (
+            pb.Validate(data=tbl)
+            .col_vals_increasing(columns="b", allow_stationary=True)
+            .interrogate()
+        )
+
+        validation
+        ```
+        """
+        assertion_type = "col_vals_increasing"
+
+        # Determine threshold to use (global or local) and normalize a local `thresholds=` value
+        thresholds = (
+            self.thresholds if thresholds is None else _normalize_thresholds_creation(thresholds)
+        )
+
+        # If `columns` is a ColumnSelector or Narwhals selector, call `col()` on it to later
+        # resolve the columns
+        if isinstance(columns, (ColumnSelector, nw.selectors.Selector)):
+            columns = col(columns)
+
+        # If `columns` is Column value or a string, place it in a list for iteration
+        if isinstance(columns, (Column, str)):
+            columns = [columns]
+
+        # Determine brief to use (global or local) and transform any shorthands of `brief=`
+        brief = self.brief if brief is None else _transform_auto_brief(brief=brief)
+
+        # Iterate over the columns and create a validation step for each
+        for column in columns:
+            val_info = _ValidationInfo(
+                assertion_type=assertion_type,
+                column=column,
+                values="",
+                na_pass=na_pass,
+                pre=pre,
+                segments=segments,
+                thresholds=thresholds,
+                actions=actions,
+                brief=brief,
+                active=active,
+                val_info={
+                    "allow_stationary": allow_stationary,
+                    "decreasing_tol": decreasing_tol if decreasing_tol else 0.0,
+                },
+            )
+
+            self._add_validation(validation_info=val_info)
+
+        return self
+
+    def col_vals_decreasing(
+        self,
+        columns: str | list[str] | Column | ColumnSelector | ColumnSelectorNarwhals,
+        allow_stationary: bool = False,
+        increasing_tol: float | None = None,
+        na_pass: bool = False,
+        pre: Callable | None = None,
+        segments: SegmentSpec | None = None,
+        thresholds: int | float | bool | tuple | dict | Thresholds = None,
+        actions: Actions | None = None,
+        brief: str | bool | None = None,
+        active: bool = True,
+    ) -> Validate:
+        """
+        Are column data decreasing by row?
+
+        The `col_vals_decreasing()` validation method checks whether column values in a table are
+        decreasing when moving down a table. There are options for allowing missing values in the
+        target column, allowing stationary phases (where consecutive values don't change), and even
+        one for allowing increasing movements up to a certain threshold. This validation will
+        operate over the number of test units that is equal to the number of rows in the table
+        (determined after any `pre=` mutation has been applied).
+
+        Parameters
+        ----------
+        columns
+            A single column or a list of columns to validate. Can also use
+            [`col()`](`pointblank.col`) with column selectors to specify one or more columns. If
+            multiple columns are supplied or resolved, there will be a separate validation step
+            generated for each column.
+        allow_stationary
+            An option to allow pauses in decreasing values. For example, if the values for the test
+            units are `[88, 85, 85, 82, 80]` then the third unit (`85`, appearing a second time)
+            would be marked as failing when `allow_stationary` is `False`. Using
+            `allow_stationary=True` will result in all the test units in `[88, 85, 85, 82, 80]` to
+            be marked as passing.
+        increasing_tol
+            An optional threshold value that allows for movement of numerical values in the positive
+            direction. By default this is `None` but using a numerical value will set the absolute
+            threshold of positive travel allowed across numerical test units. Note that setting a
+            value here also has the effect of setting `allow_stationary` to `True`.
+        na_pass
+            Should any encountered None, NA, or Null values be considered as passing test units? By
+            default, this is `False`. Set to `True` to pass test units with missing values.
+        pre
+            An optional preprocessing function or lambda to apply to the data table during
+            interrogation. This function should take a table as input and return a modified table.
+            Have a look at the *Preprocessing* section for more information on how to use this
+            argument.
+        segments
+            An optional directive on segmentation, which serves to split a validation step into
+            multiple (one step per segment). Can be a single column name, a tuple that specifies a
+            column name and its corresponding values to segment on, or a combination of both
+            (provided as a list). Read the *Segmentation* section for usage information.
+        thresholds
+            Set threshold failure levels for reporting and reacting to exceedences of the levels.
+            The thresholds are set at the step level and will override any global thresholds set in
+            `Validate(thresholds=...)`. The default is `None`, which means that no thresholds will
+            be set locally and global thresholds (if any) will take effect. Look at the *Thresholds*
+            section for information on how to set threshold levels.
+        actions
+            Optional actions to take when the validation step(s) meets or exceeds any set threshold
+            levels. If provided, the [`Actions`](`pointblank.Actions`) class should be used to
+            define the actions.
+        brief
+            An optional brief description of the validation step that will be displayed in the
+            reporting table. You can use the templating elements like `"{step}"` to insert
+            the step number, or `"{auto}"` to include an automatically generated brief. If `True`
+            the entire brief will be automatically generated. If `None` (the default) then there
+            won't be a brief.
+        active
+            A boolean value indicating whether the validation step should be active. Using `False`
+            will make the validation step inactive (still reporting its presence and keeping indexes
+            for the steps unchanged).
+
+        Returns
+        -------
+        Validate
+            The `Validate` object with the added validation step.
+
+        Examples
+        --------
+        ```{python}
+        #| echo: false
+        #| output: false
+        import pointblank as pb
+        pb.config(report_incl_header=False, report_incl_footer=False, preview_incl_header=False)
+        ```
+
+        For the examples here, we'll use a simple Polars DataFrame with a numeric column (`a`). The
+        table is shown below:
+
+        ```{python}
+        import pointblank as pb
+        import polars as pl
+
+        tbl = pl.DataFrame(
+            {
+                "a": [6, 5, 4, 3, 2, 1],
+                "b": [5, 4, 4, 3, 2, 1],
+                "c": [5, 4, 5, 3, 2, 1],
+            }
+        )
+
+        pb.preview(tbl)
+        ```
+
+        Let's validate that values in column `a` are decreasing. We'll determine if this validation
+        had any failing test units (there are six test units, one for each row).
+
+        ```{python}
+        validation = (
+            pb.Validate(data=tbl)
+            .col_vals_decreasing(columns="a")
+            .interrogate()
+        )
+
+        validation
+        ```
+
+        The validation passed as all values in column `a` are decreasing. Now let's check column
+        `b` which has a stationary value:
+
+        ```{python}
+        validation = (
+            pb.Validate(data=tbl)
+            .col_vals_decreasing(columns="b")
+            .interrogate()
+        )
+
+        validation
+        ```
+
+        This validation fails at the third row because the value `4` is repeated. If we want to
+        allow stationary values, we can use `allow_stationary=True`:
+
+        ```{python}
+        validation = (
+            pb.Validate(data=tbl)
+            .col_vals_decreasing(columns="b", allow_stationary=True)
+            .interrogate()
+        )
+
+        validation
+        ```
+        """
+        assertion_type = "col_vals_decreasing"
+
+        # Determine threshold to use (global or local) and normalize a local `thresholds=` value
+        thresholds = (
+            self.thresholds if thresholds is None else _normalize_thresholds_creation(thresholds)
+        )
+
+        # If `columns` is a ColumnSelector or Narwhals selector, call `col()` on it to later
+        # resolve the columns
+        if isinstance(columns, (ColumnSelector, nw.selectors.Selector)):
+            columns = col(columns)
+
+        # If `columns` is Column value or a string, place it in a list for iteration
+        if isinstance(columns, (Column, str)):
+            columns = [columns]
+
+        # Determine brief to use (global or local) and transform any shorthands of `brief=`
+        brief = self.brief if brief is None else _transform_auto_brief(brief=brief)
+
+        # Iterate over the columns and create a validation step for each
+        for column in columns:
+            val_info = _ValidationInfo(
+                assertion_type=assertion_type,
+                column=column,
+                values="",
+                na_pass=na_pass,
+                pre=pre,
+                segments=segments,
+                thresholds=thresholds,
+                actions=actions,
+                brief=brief,
+                active=active,
+                val_info={
+                    "allow_stationary": allow_stationary,
+                    "increasing_tol": increasing_tol if increasing_tol else 0.0,
+                },
+            )
+
+            self._add_validation(validation_info=val_info)
+
+        return self
+
     def col_vals_null(
         self,
         columns: str | list[str] | Column | ColumnSelector | ColumnSelectorNarwhals,
@@ -8448,6 +9070,291 @@ class Validate:
 
         # Package up the `pattern=` and boolean params into a dictionary for later interrogation
         values = {"pattern": pattern, "inverse": inverse}
+
+        # Iterate over the columns and create a validation step for each
+        for column in columns:
+            val_info = _ValidationInfo(
+                assertion_type=assertion_type,
+                column=column,
+                values=values,
+                na_pass=na_pass,
+                pre=pre,
+                segments=segments,
+                thresholds=thresholds,
+                actions=actions,
+                brief=brief,
+                active=active,
+            )
+
+            self._add_validation(validation_info=val_info)
+
+        return self
+
+    def col_vals_within_spec(
+        self,
+        columns: str | list[str] | Column | ColumnSelector | ColumnSelectorNarwhals,
+        spec: str,
+        na_pass: bool = False,
+        pre: Callable | None = None,
+        segments: SegmentSpec | None = None,
+        thresholds: int | float | bool | tuple | dict | Thresholds = None,
+        actions: Actions | None = None,
+        brief: str | bool | None = None,
+        active: bool = True,
+    ) -> Validate:
+        """
+        Validate whether column values fit within a specification.
+
+        The `col_vals_within_spec()` validation method checks whether column values in a table
+        correspond to a specification (`spec=`) type (details of which are available in the
+        *Specifications* section). Specifications include common data types like email addresses,
+        URLs, postal codes, vehicle identification numbers (VINs), International Bank Account
+        Numbers (IBANs), and more. This validation will operate over the number of test units that
+        is equal to the number of rows in the table.
+
+        Parameters
+        ----------
+        columns
+            A single column or a list of columns to validate. Can also use
+            [`col()`](`pointblank.col`) with column selectors to specify one or more columns. If
+            multiple columns are supplied or resolved, there will be a separate validation step
+            generated for each column.
+        spec
+            A specification string for defining the specification type. Examples are `"email"`,
+            `"url"`, and `"postal_code[USA]"`. See the *Specifications* section for all available
+            options.
+        na_pass
+            Should any encountered None, NA, or Null values be considered as passing test units? By
+            default, this is `False`. Set to `True` to pass test units with missing values.
+        pre
+            An optional preprocessing function or lambda to apply to the data table during
+            interrogation. This function should take a table as input and return a modified table.
+            Have a look at the *Preprocessing* section for more information on how to use this
+            argument.
+        segments
+            An optional directive on segmentation, which serves to split a validation step into
+            multiple (one step per segment). Can be a single column name, a tuple that specifies a
+            column name and its corresponding values to segment on, or a combination of both
+            (provided as a list). Read the *Segmentation* section for usage information.
+        thresholds
+            Set threshold failure levels for reporting and reacting to exceedences of the levels.
+            The thresholds are set at the step level and will override any global thresholds set in
+            `Validate(thresholds=...)`. The default is `None`, which means that no thresholds will
+            be set locally and global thresholds (if any) will take effect. Look at the *Thresholds*
+            section for information on how to set threshold levels.
+        actions
+            Optional actions to take when the validation step(s) meets or exceeds any set threshold
+            levels. If provided, the [`Actions`](`pointblank.Actions`) class should be used to
+            define the actions.
+        brief
+            An optional brief description of the validation step that will be displayed in the
+            reporting table. You can use the templating elements like `"{step}"` to insert
+            the step number, or `"{auto}"` to include an automatically generated brief. If `True`
+            the entire brief will be automatically generated. If `None` (the default) then there
+            won't be a brief.
+        active
+            A boolean value indicating whether the validation step should be active. Using `False`
+            will make the validation step inactive (still reporting its presence and keeping indexes
+            for the steps unchanged).
+
+        Returns
+        -------
+        Validate
+            The `Validate` object with the added validation step.
+
+        Specifications
+        --------------
+        A specification type must be used with the `spec=` argument. This is a string-based keyword
+        that corresponds to the type of data in the specified columns. The following keywords can
+        be used:
+
+        - `"isbn"`: The International Standard Book Number (ISBN) is a unique numerical identifier
+          for books. This keyword validates both 10-digit and 13-digit ISBNs.
+
+        - `"vin"`: A vehicle identification number (VIN) is a unique code used by the automotive
+          industry to identify individual motor vehicles.
+
+        - `"postal_code[<country_code>]"`: A postal code (also known as postcodes, PIN, or ZIP
+          codes) is a series of letters, digits, or both included in a postal address. Because the
+          coding varies by country, a country code in either the 2-letter (ISO 3166-1 alpha-2) or
+          3-letter (ISO 3166-1 alpha-3) format needs to be supplied (e.g., `"postal_code[US]"` or
+          `"postal_code[USA]"`). The keyword alias `"zip"` can be used for US ZIP codes.
+
+        - `"credit_card"`: A credit card number can be validated across a variety of issuers. The
+          validation uses the Luhn algorithm.
+
+        - `"iban[<country_code>]"`: The International Bank Account Number (IBAN) is a system of
+          identifying bank accounts across countries. Because the length and coding varies by
+          country, a country code needs to be supplied (e.g., `"iban[DE]"` or `"iban[DEU]"`).
+
+        - `"swift"`: Business Identifier Codes (also known as SWIFT-BIC, BIC, or SWIFT code) are
+          unique identifiers for financial and non-financial institutions.
+
+        - `"phone"`, `"email"`, `"url"`, `"ipv4"`, `"ipv6"`, `"mac"`: Phone numbers, email
+          addresses, Internet URLs, IPv4 or IPv6 addresses, and MAC addresses can be validated with
+          their respective keywords.
+
+        Only a single `spec=` value should be provided per function call.
+
+        Preprocessing
+        -------------
+        The `pre=` argument allows for a preprocessing function or lambda to be applied to the data
+        table during interrogation. This function should take a table as input and return a modified
+        table. This is useful for performing any necessary transformations or filtering on the data
+        before the validation step is applied.
+
+        The preprocessing function can be any callable that takes a table as input and returns a
+        modified table. For example, you could use a lambda function to filter the table based on
+        certain criteria or to apply a transformation to the data. Note that you can refer to
+        a column via `columns=` that is expected to be present in the transformed table, but may not
+        exist in the table before preprocessing. Regarding the lifetime of the transformed table, it
+        only exists during the validation step and is not stored in the `Validate` object or used in
+        subsequent validation steps.
+
+        Segmentation
+        ------------
+        The `segments=` argument allows for the segmentation of a validation step into multiple
+        segments. This is useful for applying the same validation step to different subsets of the
+        data. The segmentation can be done based on a single column or specific fields within a
+        column.
+
+        Providing a single column name will result in a separate validation step for each unique
+        value in that column. For example, if you have a column called `"region"` with values
+        `"North"`, `"South"`, and `"East"`, the validation step will be applied separately to each
+        region.
+
+        Alternatively, you can provide a tuple that specifies a column name and its corresponding
+        values to segment on. For example, if you have a column called `"date"` and you want to
+        segment on only specific dates, you can provide a tuple like
+        `("date", ["2023-01-01", "2023-01-02"])`. Any other values in the column will be disregarded
+        (i.e., no validation steps will be created for them).
+
+        A list with a combination of column names and tuples can be provided as well. This allows
+        for more complex segmentation scenarios. The following inputs are both valid:
+
+        ```
+        # Segments from all unique values in the `region` column
+        # and specific dates in the `date` column
+        segments=["region", ("date", ["2023-01-01", "2023-01-02"])]
+
+        # Segments from all unique values in the `region` and `date` columns
+        segments=["region", "date"]
+        ```
+
+        The segmentation is performed during interrogation, and the resulting validation steps will
+        be numbered sequentially. Each segment will have its own validation step, and the results
+        will be reported separately. This allows for a more granular analysis of the data and helps
+        identify issues within specific segments.
+
+        Importantly, the segmentation process will be performed after any preprocessing of the data
+        table. Because of this, one can conceivably use the `pre=` argument to generate a column
+        that can be used for segmentation. For example, you could create a new column called
+        `"segment"` through use of `pre=` and then use that column for segmentation.
+
+        Thresholds
+        ----------
+        The `thresholds=` parameter is used to set the failure-condition levels for the validation
+        step. If they are set here at the step level, these thresholds will override any thresholds
+        set at the global level in `Validate(thresholds=...)`.
+
+        There are three threshold levels: 'warning', 'error', and 'critical'. The threshold values
+        can either be set as a proportion failing of all test units (a value between `0` to `1`),
+        or, the absolute number of failing test units (as integer that's `1` or greater).
+
+        Thresholds can be defined using one of these input schemes:
+
+        1. use the [`Thresholds`](`pointblank.Thresholds`) class (the most direct way to create
+        thresholds)
+        2. provide a tuple of 1-3 values, where position `0` is the 'warning' level, position `1` is
+        the 'error' level, and position `2` is the 'critical' level
+        3. create a dictionary of 1-3 value entries; the valid keys: are 'warning', 'error', and
+        'critical'
+        4. a single integer/float value denoting absolute number or fraction of failing test units
+        for the 'warning' level only
+
+        If the number of failing test units exceeds set thresholds, the validation step will be
+        marked as 'warning', 'error', or 'critical'. All of the threshold levels don't need to be
+        set, you're free to set any combination of them.
+
+        Aside from reporting failure conditions, thresholds can be used to determine the actions to
+        take for each level of failure (using the `actions=` parameter).
+
+        Examples
+        --------
+        ```{python}
+        #| echo: false
+        #| output: false
+        import pointblank as pb
+        pb.config(report_incl_header=False, report_incl_footer=False, preview_incl_header=False)
+        ```
+
+        For the examples here, we'll use a simple Polars DataFrame with an email column. The table
+        is shown below:
+
+        ```{python}
+        import pointblank as pb
+        import polars as pl
+
+        tbl = pl.DataFrame(
+            {
+                "email": [
+                    "user@example.com",
+                    "admin@test.org",
+                    "invalid-email",
+                    "contact@company.co.uk",
+                ],
+            }
+        )
+
+        pb.preview(tbl)
+        ```
+
+        Let's validate that all of the values in the `email` column are valid email addresses.
+        We'll determine if this validation had any failing test units (there are four test units,
+        one for each row).
+
+        ```{python}
+        validation = (
+            pb.Validate(data=tbl)
+            .col_vals_within_spec(columns="email", spec="email")
+            .interrogate()
+        )
+
+        validation
+        ```
+
+        The validation table shows that one test unit failed (the invalid email address in row 3).
+        """
+
+        assertion_type = _get_fn_name()
+
+        _check_column(column=columns)
+        _check_pre(pre=pre)
+        # TODO: add check for segments
+        # _check_segments(segments=segments)
+        _check_thresholds(thresholds=thresholds)
+        _check_boolean_input(param=na_pass, param_name="na_pass")
+        _check_boolean_input(param=active, param_name="active")
+
+        # Determine threshold to use (global or local) and normalize a local `thresholds=` value
+        thresholds = (
+            self.thresholds if thresholds is None else _normalize_thresholds_creation(thresholds)
+        )
+
+        # If `columns` is a ColumnSelector or Narwhals selector, call `col()` on it to later
+        # resolve the columns
+        if isinstance(columns, (ColumnSelector, nw.selectors.Selector)):
+            columns = col(columns)
+
+        # If `columns` is Column value or a string, place it in a list for iteration
+        if isinstance(columns, (Column, str)):
+            columns = [columns]
+
+        # Determine brief to use (global or local) and transform any shorthands of `brief=`
+        brief = self.brief if brief is None else _transform_auto_brief(brief=brief)
+
+        # Package up the `spec=` param into a dictionary for later interrogation
+        values = {"spec": spec}
 
         # Iterate over the columns and create a validation step for each
         for column in columns:
@@ -9396,10 +10303,10 @@ class Validate:
             so try to include only the columns necessary for the validation.
         model
             The model to be used. This should be in the form of `provider:model` (e.g.,
-            `"anthropic:claude-3-5-sonnet-latest"`). Supported providers are `"anthropic"`,
-            `"openai"`, `"ollama"`, and `"bedrock"`. The model name should be the specific model to
-            be used from the provider. Model names are subject to change so consult the provider's
-            documentation for the most up-to-date model names.
+            `"anthropic:claude-sonnet-4-5"`). Supported providers are `"anthropic"`, `"openai"`,
+            `"ollama"`, and `"bedrock"`. The model name should be the specific model to be used from
+            the provider. Model names are subject to change so consult the provider's documentation
+            for the most up-to-date model names.
         batch_size
             Number of rows to process in each batch. Larger batches are more efficient but may hit
             API limits. Default is `1000`.
@@ -10357,6 +11264,275 @@ class Validate:
 
         return self
 
+    def tbl_match(
+        self,
+        tbl_compare: FrameT | Any,
+        pre: Callable | None = None,
+        thresholds: int | float | bool | tuple | dict | Thresholds = None,
+        actions: Actions | None = None,
+        brief: str | bool | None = None,
+        active: bool = True,
+    ) -> Validate:
+        """
+        Validate whether the target table matches a comparison table.
+
+        The `tbl_match()` method checks whether the target table's composition matches that of a
+        comparison table. The validation performs a comprehensive comparison using progressively
+        stricter checks (from least to most stringent):
+
+        1. **Column count match**: both tables must have the same number of columns
+        2. **Row count match**: both tables must have the same number of rows
+        3. **Schema match (loose)**: column names and dtypes match (case-insensitive, any order)
+        4. **Schema match (order)**: columns in the correct order (case-insensitive names)
+        5. **Schema match (exact)**: column names match exactly (case-sensitive, correct order)
+        6. **Data match**: values in corresponding cells must be identical
+
+        This progressive approach helps identify exactly where tables differ. The validation will
+        fail at the first check that doesn't pass, making it easier to diagnose mismatches. This
+        validation operates over a single test unit (pass/fail for complete table match).
+
+        Parameters
+        ----------
+        tbl_compare
+            The comparison table to validate against. This can be a DataFrame object (Polars or
+            Pandas), an Ibis table object, or a callable that returns a table. If a callable is
+            provided, it will be executed during interrogation to obtain the comparison table.
+        pre
+            An optional preprocessing function or lambda to apply to the data table during
+            interrogation. This function should take a table as input and return a modified table.
+            Have a look at the *Preprocessing* section for more information on how to use this
+            argument.
+        thresholds
+            Set threshold failure levels for reporting and reacting to exceedences of the levels.
+            The thresholds are set at the step level and will override any global thresholds set in
+            `Validate(thresholds=...)`. The default is `None`, which means that no thresholds will
+            be set locally and global thresholds (if any) will take effect. Look at the *Thresholds*
+            section for information on how to set threshold levels.
+        actions
+            Optional actions to take when the validation step meets or exceeds any set threshold
+            levels. If provided, the [`Actions`](`pointblank.Actions`) class should be used to
+            define the actions.
+        brief
+            An optional brief description of the validation step that will be displayed in the
+            reporting table. You can use the templating elements like `"{step}"` to insert
+            the step number, or `"{auto}"` to include an automatically generated brief. If `True`
+            the entire brief will be automatically generated. If `None` (the default) then there
+            won't be a brief.
+        active
+            A boolean value indicating whether the validation step should be active. Using `False`
+            will make the validation step inactive (still reporting its presence and keeping indexes
+            for the steps unchanged).
+
+        Returns
+        -------
+        Validate
+            The `Validate` object with the added validation step.
+
+        Preprocessing
+        -------------
+        The `pre=` argument allows for a preprocessing function or lambda to be applied to the data
+        table during interrogation. This function should take a table as input and return a modified
+        table. This is useful for performing any necessary transformations or filtering on the data
+        before the validation step is applied.
+
+        The preprocessing function can be any callable that takes a table as input and returns a
+        modified table. For example, you could use a lambda function to filter the table based on
+        certain criteria or to apply a transformation to the data. Note that the same preprocessing
+        is **not** applied to the comparison table; only the target table is preprocessed. Regarding
+        the lifetime of the transformed table, it only exists during the validation step and is not
+        stored in the `Validate` object or used in subsequent validation steps.
+
+        Thresholds
+        ----------
+        The `thresholds=` parameter is used to set the failure-condition levels for the validation
+        step. If they are set here at the step level, these thresholds will override any thresholds
+        set at the global level in `Validate(thresholds=...)`.
+
+        There are three threshold levels: 'warning', 'error', and 'critical'. The threshold values
+        can either be set as a proportion failing of all test units (a value between `0` to `1`),
+        or, the absolute number of failing test units (as integer that's `1` or greater).
+
+        Thresholds can be defined using one of these input schemes:
+
+        1. use the [`Thresholds`](`pointblank.Thresholds`) class (the most direct way to create
+        thresholds)
+        2. provide a tuple of 1-3 values, where position `0` is the 'warning' level, position `1` is
+        the 'error' level, and position `2` is the 'critical' level
+        3. create a dictionary of 1-3 value entries; the valid keys: are 'warning', 'error', and
+        'critical'
+        4. a single integer/float value denoting absolute number or fraction of failing test units
+        for the 'warning' level only
+
+        If the number of failing test units exceeds set thresholds, the validation step will be
+        marked as 'warning', 'error', or 'critical'. All of the threshold levels don't need to be
+        set, you're free to set any combination of them.
+
+        Aside from reporting failure conditions, thresholds can be used to determine the actions to
+        take for each level of failure (using the `actions=` parameter).
+
+        Cross-Backend Validation
+        ------------------------
+        The `tbl_match()` method supports **automatic backend coercion** when comparing tables from
+        different backends (e.g., comparing a Polars DataFrame against a Pandas DataFrame, or
+        comparing database tables from DuckDB/SQLite against in-memory DataFrames). When tables with
+        different backends are detected, the comparison table is automatically converted to match the
+        data table's backend before validation proceeds.
+
+        **Certified Backend Combinations:**
+
+        All combinations of the following backends have been tested and certified to work (in both
+        directions):
+
+        - Pandas DataFrame
+        - Polars DataFrame
+        - DuckDB (native)
+        - DuckDB (as Ibis table)
+        - SQLite (via Ibis)
+
+        Note that database backends (DuckDB, SQLite, PostgreSQL, MySQL, Snowflake, BigQuery) are
+        automatically materialized during validation:
+
+        - if comparing **against Polars**: materialized to Polars
+        - if comparing **against Pandas**: materialized to Pandas
+        - if **both tables are database backends**: both materialized to Polars
+
+        This ensures optimal performance and type consistency.
+
+        **Data Types That Work Best in Cross-Backend Validation:**
+
+        - numeric types: int, float columns (including proper NaN handling)
+        - string types: text columns with consistent encodings
+        - boolean types: True/False values
+        - null values: `None` and `NaN` are treated as equivalent across backends
+        - list columns: nested list structures (with basic types)
+
+        **Known Limitations:**
+
+        While many data types work well in cross-backend validation, there are some known
+        limitations to be aware of:
+
+        - date/datetime types: When converting between Polars and Pandas, date objects may be
+          represented differently. For example, `datetime.date` objects in Pandas may become
+          `pd.Timestamp` objects when converted from Polars, leading to false mismatches. To work
+          around this, ensure both tables use the same datetime representation before comparison.
+        - custom types: User-defined types or complex nested structures may not convert cleanly
+          between backends and could cause unexpected comparison failures.
+        - categorical types: Categorical/factor columns may have different internal
+          representations across backends.
+        - timezone-aware datetimes: Timezone handling differs between backends and may cause
+          comparison issues.
+
+        Here are some ideas to overcome such limitations:
+
+        - for date/datetime columns, consider using `pre=` preprocessing to normalize representations
+          before comparison.
+        - when working with custom types, manually convert tables to the same backend before using
+          `tbl_match()`.
+        - use the same datetime precision (e.g., milliseconds vs microseconds) in both tables.
+
+        Examples
+        --------
+        ```{python}
+        #| echo: false
+        #| output: false
+        import pointblank as pb
+        pb.config(report_incl_header=False, report_incl_footer=False)
+        ```
+
+        For the examples here, we'll create two simple tables to demonstrate the `tbl_match()`
+        validation.
+
+        ```{python}
+        import pointblank as pb
+        import polars as pl
+
+        # Create the first table
+        tbl_1 = pl.DataFrame({
+            "a": [1, 2, 3, 4],
+            "b": ["w", "x", "y", "z"],
+            "c": [4.0, 5.0, 6.0, 7.0]
+        })
+
+        # Create an identical table
+        tbl_2 = pl.DataFrame({
+            "a": [1, 2, 3, 4],
+            "b": ["w", "x", "y", "z"],
+            "c": [4.0, 5.0, 6.0, 7.0]
+        })
+
+        pb.preview(tbl_1)
+        ```
+
+        Let's validate that `tbl_1` matches `tbl_2`. Since these tables are identical, the
+        validation should pass.
+
+        ```{python}
+        validation = (
+            pb.Validate(data=tbl_1)
+            .tbl_match(tbl_compare=tbl_2)
+            .interrogate()
+        )
+
+        validation
+        ```
+
+        The validation table shows that the single test unit passed, indicating that the two tables
+        match completely.
+
+        Now, let's create a table with a slight difference and see what happens.
+
+        ```{python}
+        # Create a table with one different value
+        tbl_3 = pl.DataFrame({
+            "a": [1, 2, 3, 4],
+            "b": ["w", "x", "y", "z"],
+            "c": [4.0, 5.5, 6.0, 7.0]  # Changed 5.0 to 5.5
+        })
+
+        validation = (
+            pb.Validate(data=tbl_1)
+            .tbl_match(tbl_compare=tbl_3)
+            .interrogate()
+        )
+
+        validation
+        ```
+
+        The validation table shows that the single test unit failed because the tables don't match
+        (one value is different in column `c`).
+        """
+
+        assertion_type = _get_fn_name()
+
+        _check_pre(pre=pre)
+        _check_thresholds(thresholds=thresholds)
+        _check_boolean_input(param=active, param_name="active")
+
+        # Determine threshold to use (global or local) and normalize a local `thresholds=` value
+        thresholds = (
+            self.thresholds if thresholds is None else _normalize_thresholds_creation(thresholds)
+        )
+
+        # Package up the `tbl_compare` into a dictionary for later interrogation
+        values = {"tbl_compare": tbl_compare}
+
+        # Determine brief to use (global or local) and transform any shorthands of `brief=`
+        brief = self.brief if brief is None else _transform_auto_brief(brief=brief)
+
+        val_info = _ValidationInfo(
+            assertion_type=assertion_type,
+            values=values,
+            pre=pre,
+            thresholds=thresholds,
+            actions=actions,
+            brief=brief,
+            active=active,
+        )
+
+        self._add_validation(validation_info=val_info)
+
+        return self
+
     def conjointly(
         self,
         *exprs: Callable,
@@ -11153,6 +12329,12 @@ class Validate:
             # This prevents modifications from one validation step affecting others
             data_tbl_step = _copy_dataframe(data_tbl)
 
+            # Capture original table dimensions and columns before preprocessing
+            # (only if preprocessing is present - we'll set these inside the preprocessing block)
+            original_rows = None
+            original_cols = None
+            original_column_names = None
+
             # ------------------------------------------------
             # Preprocessing stage
             # ------------------------------------------------
@@ -11160,6 +12342,16 @@ class Validate:
             # Determine whether any preprocessing functions are to be applied to the table
             if validation.pre is not None:
                 try:
+                    # Capture original table dimensions before preprocessing
+                    # Use get_row_count() instead of len() for compatibility with PySpark, etc.
+                    original_rows = get_row_count(data_tbl_step)
+                    original_cols = get_column_count(data_tbl_step)
+                    original_column_names = set(
+                        data_tbl_step.columns
+                        if hasattr(data_tbl_step, "columns")
+                        else list(data_tbl_step.columns)
+                    )
+
                     # Read the text of the preprocessing function
                     pre_text = _pre_processing_funcs_to_str(validation.pre)
 
@@ -11191,6 +12383,62 @@ class Validate:
                     # If the preprocessing function is a function, apply it to the table
                     elif isinstance(validation.pre, Callable):
                         data_tbl_step = validation.pre(data_tbl_step)
+
+                    # After successful preprocessing, check dimensions and create notes
+                    # Use get_row_count() and get_column_count() for compatibility
+                    processed_rows = get_row_count(data_tbl_step)
+                    processed_cols = get_column_count(data_tbl_step)
+
+                    # Always add a note when preprocessing is applied
+                    if original_rows != processed_rows or original_cols != processed_cols:
+                        # Dimensions changed - show the change
+                        note_html = _create_preprocessing_note_html(
+                            original_rows=original_rows,
+                            original_cols=original_cols,
+                            processed_rows=processed_rows,
+                            processed_cols=processed_cols,
+                            locale=self.locale,
+                        )
+                        note_text = _create_preprocessing_note_text(
+                            original_rows=original_rows,
+                            original_cols=original_cols,
+                            processed_rows=processed_rows,
+                            processed_cols=processed_cols,
+                        )
+                    else:
+                        # No dimension change - just indicate preprocessing was applied
+                        note_html = _create_preprocessing_no_change_note_html(locale=self.locale)
+                        note_text = _create_preprocessing_no_change_note_text()
+
+                    validation._add_note(
+                        key="pre_applied",
+                        markdown=note_html,
+                        text=note_text,
+                    )
+
+                    # Check if target column is synthetic (exists in processed but not original)
+                    # Only check for single column names (not lists used in rows_distinct, etc.)
+                    if column is not None and isinstance(column, str):
+                        processed_column_names = set(
+                            data_tbl_step.columns
+                            if hasattr(data_tbl_step, "columns")
+                            else list(data_tbl_step.columns)
+                        )
+
+                        # Check if the target column is in the processed table but not in original
+                        if column in processed_column_names and column not in original_column_names:
+                            note_html = _create_synthetic_target_column_note_html(
+                                column_name=column,
+                                locale=self.locale,
+                            )
+                            note_text = _create_synthetic_target_column_note_text(
+                                column_name=column,
+                            )
+                            validation._add_note(
+                                key="syn_target_col",
+                                markdown=note_html,
+                                text=note_text,
+                            )
 
                 except Exception:
                     # If preprocessing fails, mark the validation as having an eval_error
@@ -11268,11 +12516,14 @@ class Validate:
                         "col_vals_le",
                         "col_vals_null",
                         "col_vals_not_null",
+                        "col_vals_increasing",
+                        "col_vals_decreasing",
                         "col_vals_between",
                         "col_vals_outside",
                         "col_vals_in_set",
                         "col_vals_not_in_set",
                         "col_vals_regex",
+                        "col_vals_within_spec",
                     ]:
                         # Process table for column validation
                         tbl = _column_test_prep(
@@ -11308,6 +12559,36 @@ class Validate:
                         elif assertion_method == "not_null":
                             results_tbl = interrogate_not_null(tbl=tbl, column=column)
 
+                        elif assertion_type == "col_vals_increasing":
+                            from pointblank._interrogation import interrogate_increasing
+
+                            # Extract direction options from val_info
+                            allow_stationary = validation.val_info.get("allow_stationary", False)
+                            decreasing_tol = validation.val_info.get("decreasing_tol", 0.0)
+
+                            results_tbl = interrogate_increasing(
+                                tbl=tbl,
+                                column=column,
+                                allow_stationary=allow_stationary,
+                                decreasing_tol=decreasing_tol,
+                                na_pass=na_pass,
+                            )
+
+                        elif assertion_type == "col_vals_decreasing":
+                            from pointblank._interrogation import interrogate_decreasing
+
+                            # Extract direction options from val_info
+                            allow_stationary = validation.val_info.get("allow_stationary", False)
+                            increasing_tol = validation.val_info.get("increasing_tol", 0.0)
+
+                            results_tbl = interrogate_decreasing(
+                                tbl=tbl,
+                                column=column,
+                                allow_stationary=allow_stationary,
+                                increasing_tol=increasing_tol,
+                                na_pass=na_pass,
+                            )
+
                         elif assertion_type == "col_vals_between":
                             results_tbl = interrogate_between(
                                 tbl=tbl,
@@ -11338,6 +12619,13 @@ class Validate:
 
                         elif assertion_type == "col_vals_regex":
                             results_tbl = interrogate_regex(
+                                tbl=tbl, column=column, values=value, na_pass=na_pass
+                            )
+
+                        elif assertion_type == "col_vals_within_spec":
+                            from pointblank._interrogation import interrogate_within_spec
+
+                            results_tbl = interrogate_within_spec(
                                 tbl=tbl, column=column, values=value, na_pass=na_pass
                             )
 
@@ -11400,6 +12688,17 @@ class Validate:
                         # Add the schema validation info to the validation object
                         validation.val_info = schema_validation_info
 
+                        # Add a note with the schema expectation and results
+                        schema_note_html = _create_col_schema_match_note_html(
+                            schema_info=schema_validation_info, locale=self.locale
+                        )
+                        schema_note_text = _create_col_schema_match_note_text(
+                            schema_info=schema_validation_info
+                        )
+                        validation._add_note(
+                            key="schema_check", markdown=schema_note_html, text=schema_note_text
+                        )
+
                         validation.all_passed = result_bool
                         validation.n = 1
                         validation.n_passed = int(result_bool)
@@ -11434,6 +12733,25 @@ class Validate:
 
                         results_tbl = None
 
+                    elif assertion_type == "tbl_match":
+                        from pointblank._interrogation import tbl_match
+
+                        # Get the comparison table (could be callable or actual table)
+                        tbl_compare = value["tbl_compare"]
+
+                        # If tbl_compare is callable, execute it to get the table
+                        if callable(tbl_compare):
+                            tbl_compare = tbl_compare()
+
+                        result_bool = tbl_match(data_tbl=data_tbl_step, tbl_compare=tbl_compare)
+
+                        validation.all_passed = result_bool
+                        validation.n = 1
+                        validation.n_passed = int(result_bool)
+                        validation.n_failed = 1 - result_bool
+
+                        results_tbl = None
+
                     elif assertion_type == "conjointly":
                         results_tbl = conjointly_validation(
                             data_tbl=data_tbl_step,
@@ -11448,8 +12766,9 @@ class Validate:
                         )  # pragma: no cover
 
                 except Exception as e:
-                    # Only catch specific data quality comparison errors, not programming errors
+                    # Catch data quality errors and column not found errors
                     error_msg = str(e).lower()
+
                     is_comparison_error = (
                         "boolean value of na is ambiguous" in error_msg
                         or "cannot compare" in error_msg
@@ -11460,20 +12779,101 @@ class Validate:
                         or ("dtype" in error_msg and "compare" in error_msg)
                     )
 
-                    if is_comparison_error:  # pragma: no cover
-                        # If data quality comparison fails, mark the validation as having an eval_error
+                    is_column_not_found = "column" in error_msg and "not found" in error_msg
+
+                    is_comparison_column_not_found = (
+                        "unable to find column" in error_msg and "valid columns" in error_msg
+                    )
+
+                    if (
+                        is_comparison_error or is_column_not_found or is_comparison_column_not_found
+                    ):  # pragma: no cover
+                        # If data quality comparison fails or column not found, mark as eval_error
                         validation.eval_error = True  # pragma: no cover
+
+                        # Add a note for column not found errors (target column)
+                        if is_column_not_found:
+                            note_html = _create_column_not_found_note_html(
+                                column_name=column,
+                                available_columns=list(data_tbl_step.columns)
+                                if hasattr(data_tbl_step, "columns")
+                                else [],
+                                locale=self.locale,
+                            )
+                            note_text = _create_column_not_found_note_text(
+                                column_name=column,
+                                available_columns=list(data_tbl_step.columns)
+                                if hasattr(data_tbl_step, "columns")
+                                else [],
+                            )
+                            validation._add_note(
+                                key="column_not_found",
+                                markdown=note_html,
+                                text=note_text,
+                            )
+
+                        # Add a note for comparison column not found errors
+                        elif is_comparison_column_not_found:
+                            # Extract column name from error message
+                            # Error format: 'unable to find column "col_name"; valid columns: ...'
+                            match = re.search(r'unable to find column "([^"]+)"', str(e))
+
+                            if match:
+                                missing_col_name = match.group(1)
+
+                                # Determine position for between/outside validations
+                                position = None
+                                if assertion_type in ["col_vals_between", "col_vals_outside"]:
+                                    # Check if missing column is in left or right position
+                                    from pointblank.column import Column
+
+                                    if (
+                                        isinstance(value[0], Column)
+                                        and value[0].exprs == missing_col_name
+                                    ):
+                                        position = "left"
+                                    elif (
+                                        isinstance(value[1], Column)
+                                        and value[1].exprs == missing_col_name
+                                    ):
+                                        position = "right"
+
+                                note_html = _create_comparison_column_not_found_note_html(
+                                    column_name=missing_col_name,
+                                    position=position,
+                                    available_columns=list(data_tbl_step.columns)
+                                    if hasattr(data_tbl_step, "columns")
+                                    else [],
+                                    locale=self.locale,
+                                )
+                                note_text = _create_comparison_column_not_found_note_text(
+                                    column_name=missing_col_name,
+                                    position=position,
+                                    available_columns=list(data_tbl_step.columns)
+                                    if hasattr(data_tbl_step, "columns")
+                                    else [],
+                                )
+                                validation._add_note(
+                                    key="comparison_column_not_found",
+                                    markdown=note_html,
+                                    text=note_text,
+                                )
+
                         end_time = datetime.datetime.now(datetime.timezone.utc)  # pragma: no cover
+
                         validation.proc_duration_s = (
                             end_time - start_time
                         ).total_seconds()  # pragma: no cover
+
                         validation.time_processed = end_time.isoformat(
                             timespec="milliseconds"
                         )  # pragma: no cover
+
                         validation.active = False  # pragma: no cover
+
                         continue  # pragma: no cover
                     else:
-                        # For other errors (like missing columns), let them propagate
+                        # For other unexpected errors, let them propagate
                         raise
 
             else:
@@ -11555,6 +12955,34 @@ class Validate:
                         fraction_failing=validation.f_failed, test_units=validation.n, level=level
                     ),
                 )
+
+            # Add note for local thresholds (if they differ from global thresholds)
+            if threshold != self.thresholds:
+                if threshold != Thresholds():
+                    # Local thresholds are set - generate threshold note
+                    threshold_note_html = _create_local_threshold_note_html(
+                        thresholds=threshold, locale=self.locale
+                    )
+                    threshold_note_text = _create_local_threshold_note_text(thresholds=threshold)
+
+                    # Add the note to the validation step
+                    validation._add_note(
+                        key="local_thresholds",
+                        markdown=threshold_note_html,
+                        text=threshold_note_text,
+                    )
+
+                elif self.thresholds != Thresholds():
+                    # Thresholds explicitly reset to empty when global thresholds exist
+                    reset_note_html = _create_threshold_reset_note_html(locale=self.locale)
+                    reset_note_text = _create_threshold_reset_note_text()
+
+                    # Add the note to the validation step
+                    validation._add_note(
+                        key="local_threshold_reset",
+                        markdown=reset_note_html,
+                        text=reset_note_text,
+                    )
 
             # If there is any threshold level that has been exceeded, then produce and
             # set the general failure text for the validation step
@@ -13051,11 +14479,15 @@ class Validate:
         - [`col_vals_outside()`](`pointblank.Validate.col_vals_outside`)
         - [`col_vals_in_set()`](`pointblank.Validate.col_vals_in_set`)
         - [`col_vals_not_in_set()`](`pointblank.Validate.col_vals_not_in_set`)
+        - [`col_vals_increasing()`](`pointblank.Validate.col_vals_increasing`)
+        - [`col_vals_decreasing()`](`pointblank.Validate.col_vals_decreasing`)
         - [`col_vals_null()`](`pointblank.Validate.col_vals_null`)
         - [`col_vals_not_null()`](`pointblank.Validate.col_vals_not_null`)
         - [`col_vals_regex()`](`pointblank.Validate.col_vals_regex`)
+        - [`col_vals_within_spec()`](`pointblank.Validate.col_vals_within_spec`)
         - [`col_vals_expr()`](`pointblank.Validate.col_vals_expr`)
         - [`conjointly()`](`pointblank.Validate.conjointly`)
+        - [`prompt()`](`pointblank.Validate.prompt`)
 
         An extracted row for these validation methods means that a test unit failed for that row in
         the validation step.
@@ -13494,8 +14926,158 @@ class Validate:
 
         return sundered_tbl
 
+    def get_notes(
+        self, i: int, format: str = "dict"
+    ) -> dict[str, dict[str, str]] | list[str] | None:
+        """
+        Get notes from a validation step by its step number.
+
+        This is a convenience method that retrieves notes from a specific validation step using
+        the step number (1-indexed). It provides easier access to step notes without having to
+        navigate through the `validation_info` list.
+
+        Parameters
+        ----------
+        i
+            The step number (1-indexed) to retrieve notes from. This corresponds to the step
+            numbers shown in validation reports.
+        format
+            The format to return notes in:
+            - `"dict"`: Returns the full notes dictionary (default)
+            - `"markdown"`: Returns a list of markdown-formatted note values
+            - `"text"`: Returns a list of plain text note values
+            - `"keys"`: Returns a list of note keys
+
+        Returns
+        -------
+        dict, list, or None
+            The notes in the requested format, or `None` if the step doesn't exist or has no notes.
+
+        Examples
+        --------
+        ```python
+        import pointblank as pb
+        import polars as pl
+
+        # Create validation with notes
+        validation = pb.Validate(pl.DataFrame({"x": [1, 2, 3]}))
+        validation.col_vals_gt(columns="x", value=0)
+
+        # Add a note to step 1
+        validation.validation_info[0]._add_note(
+            key="info",
+            markdown="This is a **test** note",
+            text="This is a test note"
+        )
+
+        # Interrogate
+        validation.interrogate()
+
+        # Get notes from step 1 using the step number
+        notes = validation.get_notes(1)
+        # Returns: {'info': {'markdown': 'This is a **test** note', 'text': '...'}}
+
+        # Get just the markdown versions
+        markdown_notes = validation.get_notes(1, format="markdown")
+        # Returns: ['This is a **test** note']
+
+        # Get just the keys
+        keys = validation.get_notes(1, format="keys")
+        # Returns: ['info']
+        ```
+        """
+        # Validate step number
+        if not isinstance(i, int) or i < 1:
+            raise ValueError(f"Step number must be a positive integer, got: {i}")
+
+        # Find the validation step with the matching step number
+        # Note: validation_info may contain multiple steps after segmentation,
+        # so we need to find the one with the matching `i` value
+        for validation in self.validation_info:
+            if validation.i == i:
+                return validation._get_notes(format=format)
+
+        # Step not found
+        return None
+
+    def get_note(self, i: int, key: str, format: str = "dict") -> dict[str, str] | str | None:
+        """
+        Get a specific note from a validation step by its step number and note key.
+
+        This method retrieves a specific note from a validation step using the step number
+        (1-indexed) and the note key. It provides easier access to individual notes without having
+        to navigate through the `validation_info` list or retrieve all notes.
+
+        Parameters
+        ----------
+        i
+            The step number (1-indexed) to retrieve the note from. This corresponds to the step
+            numbers shown in validation reports.
+        key
+            The key of the note to retrieve.
+        format
+            The format to return the note in:
+            - `"dict"`: Returns the note as a dictionary with 'markdown' and 'text' keys (default)
+            - `"markdown"`: Returns just the markdown-formatted note value
+            - `"text"`: Returns just the plain text note value
+
+        Returns
+        -------
+        dict, str, or None
+            The note in the requested format, or `None` if the step or note doesn't exist.
+
+        Examples
+        --------
+        ```python
+        import pointblank as pb
+        import polars as pl
+
+        # Create validation with notes
+        validation = pb.Validate(pl.DataFrame({"x": [1, 2, 3]}))
+        validation.col_vals_gt(columns="x", value=0)
+
+        # Add a note to step 1
+        validation.validation_info[0]._add_note(
+            key="threshold_info",
+            markdown="Using **default** thresholds",
+            text="Using default thresholds"
+        )
+
+        # Interrogate
+        validation.interrogate()
+
+        # Get a specific note from step 1 using step number and key
+        note = validation.get_note(1, "threshold_info")
+        # Returns: {'markdown': 'Using **default** thresholds', 'text': '...'}
+
+        # Get just the markdown version
+        markdown = validation.get_note(1, "threshold_info", format="markdown")
+        # Returns: 'Using **default** thresholds'
+
+        # Get just the text version
+        text = validation.get_note(1, "threshold_info", format="text")
+        # Returns: 'Using default thresholds'
+        ```
+        """
+        # Validate step number
+        if not isinstance(i, int) or i < 1:
+            raise ValueError(f"Step number must be a positive integer, got: {i}")
+
+        # Find the validation step with the matching step number
+        for validation in self.validation_info:
+            if validation.i == i:
+                return validation._get_note(key=key, format=format)
+
+        # Step not found
+        return None
+
     def get_tabular_report(
-        self, title: str | None = ":default:", incl_header: bool = None, incl_footer: bool = None
+        self,
+        title: str | None = ":default:",
+        incl_header: bool = None,
+        incl_footer: bool = None,
+        incl_footer_timings: bool = None,
+        incl_footer_notes: bool = None,
     ) -> GT:
         """
         Validation report as a GT table.
@@ -13518,6 +15100,20 @@ class Validate:
             name of the table as the title for the report. If no title is wanted, then `":none:"`
             can be used. Aside from keyword options, text can be provided for the title. This will
             be interpreted as Markdown text and transformed internally to HTML.
+        incl_header
+            Controls whether the header section should be displayed. If `None`, uses the global
+            configuration setting. The header contains the table name, label, and threshold
+            information.
+        incl_footer
+            Controls whether the footer section should be displayed. If `None`, uses the global
+            configuration setting. The footer can contain validation timing information and notes.
+        incl_footer_timings
+            Controls whether validation timing information (start time, duration, end time) should
+            be displayed in the footer. If `None`, uses the global configuration setting. Only
+            applies when `incl_footer=True`.
+        incl_footer_notes
+            Controls whether notes from validation steps should be displayed in the footer. If
+            `None`, uses the global configuration setting. Only applies when `incl_footer=True`.
 
         Returns
         -------
@@ -13577,6 +15173,10 @@ class Validate:
             incl_header = global_config.report_incl_header
         if incl_footer is None:
             incl_footer = global_config.report_incl_footer
+        if incl_footer_timings is None:
+            incl_footer_timings = global_config.report_incl_footer_timings
+        if incl_footer_notes is None:
+            incl_footer_notes = global_config.report_incl_footer_notes
 
         # Do we have a DataFrame library to work with?
         _check_any_df_lib(method_used="get_tabular_report")
@@ -13815,30 +15415,53 @@ class Validate:
         columns_upd = []
 
         columns = validation_info_dict["column"]
+        notes = validation_info_dict["notes"]
 
         assertion_type = validation_info_dict["assertion_type"]
 
         # Iterate over the values in the `column` entry
         for i, column in enumerate(columns):
+            # Check if this validation has a synthetic target column note
+            has_synthetic_column = (
+                notes[i] is not None and isinstance(notes[i], dict) and "syn_target_col" in notes[i]
+            )
+
+            column_text = None
+
             if assertion_type[i] in [
                 "col_schema_match",
                 "row_count_match",
                 "col_count_match",
                 "col_vals_expr",
             ]:
-                columns_upd.append("&mdash;")
+                column_text = "&mdash;"
             elif assertion_type[i] in ["rows_distinct", "rows_complete", "prompt"]:
                 if not column:
                     # If there is no column subset, then all columns are used
-                    columns_upd.append("ALL COLUMNS")
+                    column_text = "ALL COLUMNS"
                 else:
                     # With a column subset list, format with commas between the column names
-                    columns_upd.append(", ".join(column))
-
+                    column_text = ", ".join(column)
             elif assertion_type[i] in ["conjointly", "specially"]:
-                columns_upd.append("")
+                column_text = ""
             else:
-                columns_upd.append(str(column))
+                column_text = str(column)
+
+            # Apply underline styling for synthetic columns (using the purple color from the icon)
+            # Only apply styling if column_text is not empty and not a special marker
+            if (
+                has_synthetic_column
+                and column_text
+                and column_text not in ["&mdash;", "ALL COLUMNS", ""]
+            ):
+                column_text = (
+                    f'<span style="text-decoration: underline; '
+                    f"text-decoration-color: #9A7CB4; text-decoration-thickness: 1px; "
+                    f'text-underline-offset: 3px;">'
+                    f"{column_text}</span>"
+                )
+
+            columns_upd.append(column_text)
 
         # Add the `columns_upd` entry to the dictionary
         validation_info_dict["columns_upd"] = columns_upd
@@ -13900,6 +15523,9 @@ class Validate:
             elif assertion_type[i] in ["col_vals_expr", "conjointly"]:
                 values_upd.append("COLUMN EXPR")
 
+            elif assertion_type[i] in ["col_vals_increasing", "col_vals_decreasing"]:
+                values_upd.append("")
+
             elif assertion_type[i] in ["row_count_match", "col_count_match"]:
                 count = values[i]["count"]
                 inverse = values[i]["inverse"]
@@ -13909,6 +15535,9 @@ class Validate:
 
                 values_upd.append(str(count))
 
+            elif assertion_type[i] in ["tbl_match"]:
+                values_upd.append("EXTERNAL TABLE")
+
             elif assertion_type[i] in ["specially"]:
                 values_upd.append("EXPR")
 
@@ -13916,6 +15545,11 @@ class Validate:
                 pattern = value["pattern"]
 
                 values_upd.append(str(pattern))
+
+            elif assertion_type[i] in ["col_vals_within_spec"]:
+                spec = value["spec"]
+
+                values_upd.append(str(spec))
 
             elif assertion_type[i] in ["prompt"]:  # pragma: no cover
                 # For AI validation, show only the prompt, not the full config
@@ -14173,6 +15807,7 @@ class Validate:
         validation_info_dict.pop("label")
         validation_info_dict.pop("active")
         validation_info_dict.pop("all_passed")
+        validation_info_dict.pop("notes")
 
         # If no interrogation performed, populate the `i` entry with a sequence of integers
         # from `1` to the number of validation steps
@@ -14357,7 +15992,15 @@ class Validate:
             gt_tbl = gt_tbl.tab_header(title=html(title_text), subtitle=html(combined_subtitle))
 
         if incl_footer:
-            gt_tbl = gt_tbl.tab_source_note(source_note=html(table_time))
+            # Add table time as HTML source note if enabled
+            if incl_footer_timings:
+                gt_tbl = gt_tbl.tab_source_note(source_note=html(table_time))
+
+            # Create notes markdown from validation steps and add as separate source note if enabled
+            if incl_footer_notes:
+                notes_markdown = _create_notes_html(self.validation_info)
+                if notes_markdown:
+                    gt_tbl = gt_tbl.tab_source_note(source_note=md(notes_markdown))
 
         # If the interrogation has not been performed, then style the table columns dealing with
         # interrogation data as grayed out
@@ -14466,11 +16109,15 @@ class Validate:
         - [`col_vals_outside()`](`pointblank.Validate.col_vals_outside`)
         - [`col_vals_in_set()`](`pointblank.Validate.col_vals_in_set`)
         - [`col_vals_not_in_set()`](`pointblank.Validate.col_vals_not_in_set`)
+        - [`col_vals_increasing()`](`pointblank.Validate.col_vals_increasing`)
+        - [`col_vals_decreasing()`](`pointblank.Validate.col_vals_decreasing`)
         - [`col_vals_null()`](`pointblank.Validate.col_vals_null`)
         - [`col_vals_not_null()`](`pointblank.Validate.col_vals_not_null`)
         - [`col_vals_regex()`](`pointblank.Validate.col_vals_regex`)
+        - [`col_vals_within_spec()`](`pointblank.Validate.col_vals_within_spec`)
         - [`col_vals_expr()`](`pointblank.Validate.col_vals_expr`)
         - [`conjointly()`](`pointblank.Validate.conjointly`)
+        - [`prompt()`](`pointblank.Validate.prompt`)
         - [`rows_complete()`](`pointblank.Validate.rows_complete`)
 
         The [`rows_distinct()`](`pointblank.Validate.rows_distinct`) validation step will produce a
@@ -14770,12 +16417,34 @@ class Validate:
 
             except Exception:  # pragma: no cover
                 validation.eval_error = True
+                columns_resolved = []
+                # Store columns list for note generation
+                try:
+                    columns = list(table.columns) if "table" in locals() else []
+                except Exception:
+                    columns = []
 
             # If no columns were resolved, then create a patched validation step with the
             # `eval_error` and `column` attributes set
             if not columns_resolved:
                 validation.eval_error = True
                 validation.column = str(column_expr)
+
+                # Add a helpful note explaining that no columns were resolved
+                note_html = _create_no_columns_resolved_note_html(
+                    column_expr=str(column_expr),
+                    available_columns=columns,
+                    locale=self.locale,
+                )
+                note_text = _create_no_columns_resolved_note_text(
+                    column_expr=str(column_expr),
+                    available_columns=columns,
+                )
+                validation._add_note(
+                    key="no_columns_resolved",
+                    markdown=note_html,
+                    text=note_text,
+                )
 
                 expanded_validation_info.append(validation)
                 continue
@@ -16057,6 +17726,7 @@ def _validation_info_as_dict(validation_info: _ValidationInfo) -> dict:
         "critical",
         "extract",
         "proc_duration_s",
+        "notes",
     ]
 
     # Filter the validation information to include only the selected fields
@@ -16536,6 +18206,86 @@ def _create_table_time_html(
     )
 
 
+def _create_notes_html(validation_info: list) -> str:
+    """
+    Create markdown text for validation notes/footnotes.
+
+    This function collects notes from all validation steps and formats them as footnotes
+    for display in the report footer. Each note is prefixed with the step number in
+    uppercase small caps bold formatting, and the note content is rendered as markdown.
+
+    Parameters
+    ----------
+    validation_info
+        List of _ValidationInfo objects from which to extract notes.
+
+    Returns
+    -------
+    str
+        Markdown string containing formatted footnotes, or empty string if no notes exist.
+    """
+    # Collect all notes from validation steps
+    all_notes = []
+    for step in validation_info:
+        if step.notes:
+            for key, content in step.notes.items():
+                # Store note with step number for context
+                all_notes.append(
+                    {
+                        "step": step.i,
+                        "key": key,
+                        "markdown": content["markdown"],
+                        "text": content["text"],
+                    }
+                )
+
+    # If no notes, return empty string
+    if not all_notes:
+        return ""
+
+    # Build markdown for notes section
+    # Start with a styled horizontal rule and bold "Notes" header
+    notes_parts = [
+        (
+            "<hr style='border: none; border-top-width: 1px; border-top-style: dotted; "
+            "border-top-color: #B5B5B5; margin-top: -3px; margin-bottom: 3px;'>"
+        ),
+        "<strong>Notes</strong>",
+        "",
+    ]
+
+    previous_step = None
+    for note in all_notes:
+        # Determine if this is the first note for this step
+        is_first_for_step = note["step"] != previous_step
+        previous_step = note["step"]
+
+        # Format step label with HTML for uppercase small caps bold
+        # Use lighter color for subsequent notes of the same step
+        step_color = "#333333" if is_first_for_step else "#999999"
+        step_label = (
+            f"<span style='font-variant: small-caps; font-weight: bold; font-size: smaller; "
+            f"text-transform: uppercase; color: {step_color};'>Step {note['step']}</span>"
+        )
+
+        # Format note key in monospaced font with smaller size
+        note_key = f"<span style='font-family: \"IBM Plex Mono\", monospace; font-size: smaller;'>({note['key']})</span>"
+
+        # Combine step label, note key, and markdown content
+        note_text = f"{step_label} {note_key} {note['markdown']}"
+        notes_parts.append(note_text)
+        notes_parts.append("")  # Add blank line between notes
+
+    # Remove trailing blank line
+    if notes_parts[-1] == "":
+        notes_parts.pop()
+
+    # Join with newlines to create markdown text
+    notes_markdown = "\n".join(notes_parts)
+
+    return notes_markdown
+
+
 def _create_label_html(label: str | None, start_time: str) -> str:
     if label is None:
         # Remove the decimal and everything beyond that
@@ -16620,60 +18370,93 @@ def _format_single_float_with_gt_custom(
     return formatted_values[0]  # Return the single formatted value
 
 
+def _format_number_safe(
+    value: float, decimals: int, drop_trailing_zeros: bool = False, locale: str = "en", df_lib=None
+) -> str:
+    """
+    Safely format a float value with locale support.
+
+    Uses GT-based formatting when a DataFrame library is available, otherwise falls back to
+    vals.fmt_number. This helper is used by threshold formatting functions.
+    """
+    if df_lib is not None and value is not None:
+        # Use GT-based formatting to avoid Pandas dependency completely
+        return _format_single_float_with_gt_custom(
+            value,
+            decimals=decimals,
+            drop_trailing_zeros=drop_trailing_zeros,
+            locale=locale,
+            df_lib=df_lib,
+        )
+    else:
+        # Fallback to the original behavior
+        return fmt_number(
+            value, decimals=decimals, drop_trailing_zeros=drop_trailing_zeros, locale=locale
+        )[0]  # pragma: no cover
+
+
+def _format_integer_safe(value: int, locale: str = "en", df_lib=None) -> str:
+    """
+    Safely format an integer value with locale support.
+
+    Uses GT-based formatting when a DataFrame library is available, otherwise falls back to
+    vals.fmt_integer. This helper is used by threshold formatting functions.
+    """
+    if df_lib is not None and value is not None:
+        # Use GT-based formatting to avoid Pandas dependency completely
+        return _format_single_integer_with_gt(value, locale=locale, df_lib=df_lib)
+    else:
+        # Fallback to the original behavior
+        return fmt_integer(value, locale=locale)[0]
+
+
 def _create_thresholds_html(thresholds: Thresholds, locale: str, df_lib=None) -> str:
     if thresholds == Thresholds():
         return ""
 
-    # Helper functions to format numbers safely
-    def _format_number_safe(value: float, decimals: int, drop_trailing_zeros: bool = False) -> str:
-        if df_lib is not None and value is not None:
-            # Use GT-based formatting to avoid Pandas dependency completely
-            return _format_single_float_with_gt_custom(
-                value,
-                decimals=decimals,
-                drop_trailing_zeros=drop_trailing_zeros,
-                locale=locale,
-                df_lib=df_lib,
-            )
-        else:
-            # Fallback to the original behavior
-            return fmt_number(
-                value, decimals=decimals, drop_trailing_zeros=drop_trailing_zeros, locale=locale
-            )[0]  # pragma: no cover
-
-    def _format_integer_safe(value: int) -> str:
-        if df_lib is not None and value is not None:
-            # Use GT-based formatting to avoid Pandas dependency completely
-            return _format_single_integer_with_gt(value, locale=locale, df_lib=df_lib)
-        else:
-            # Fallback to the original behavior
-            return fmt_integer(value, locale=locale)[0]
-
     warning = (
-        _format_number_safe(thresholds.warning_fraction, decimals=3, drop_trailing_zeros=True)
+        _format_number_safe(
+            thresholds.warning_fraction,
+            decimals=3,
+            drop_trailing_zeros=True,
+            locale=locale,
+            df_lib=df_lib,
+        )
         if thresholds.warning_fraction is not None
         else (
-            _format_integer_safe(thresholds.warning_count)
+            _format_integer_safe(thresholds.warning_count, locale=locale, df_lib=df_lib)
             if thresholds.warning_count is not None
             else "&mdash;"
         )
     )
 
     error = (
-        _format_number_safe(thresholds.error_fraction, decimals=3, drop_trailing_zeros=True)
+        _format_number_safe(
+            thresholds.error_fraction,
+            decimals=3,
+            drop_trailing_zeros=True,
+            locale=locale,
+            df_lib=df_lib,
+        )
         if thresholds.error_fraction is not None
         else (
-            _format_integer_safe(thresholds.error_count)
+            _format_integer_safe(thresholds.error_count, locale=locale, df_lib=df_lib)
             if thresholds.error_count is not None
             else "&mdash;"
         )
     )
 
     critical = (
-        _format_number_safe(thresholds.critical_fraction, decimals=3, drop_trailing_zeros=True)
+        _format_number_safe(
+            thresholds.critical_fraction,
+            decimals=3,
+            drop_trailing_zeros=True,
+            locale=locale,
+            df_lib=df_lib,
+        )
         if thresholds.critical_fraction is not None
         else (
-            _format_integer_safe(thresholds.critical_count)
+            _format_integer_safe(thresholds.critical_count, locale=locale, df_lib=df_lib)
             if thresholds.critical_count is not None
             else "&mdash;"
         )
@@ -16717,6 +18500,784 @@ def _create_thresholds_html(thresholds: Thresholds, locale: str, df_lib=None) ->
         "</span>"
         "</span>"
     )
+
+
+def _create_local_threshold_note_html(thresholds: Thresholds, locale: str = "en") -> str:
+    """
+    Create a miniature HTML representation of local thresholds for display in notes.
+
+    This function generates a compact HTML representation of threshold values that is suitable for
+    display in validation step notes/footnotes. It follows a similar visual style to the global
+    thresholds shown in the header, but with a more compact format.
+
+    Parameters
+    ----------
+    thresholds
+        The Thresholds object containing the local threshold values.
+    locale
+        The locale to use for formatting numbers (default: "en").
+
+    Returns
+    -------
+    str
+        HTML string containing the formatted threshold information.
+    """
+    if thresholds == Thresholds():
+        return ""
+
+    # Get df_lib for formatting
+    df_lib = None
+    if _is_lib_present("polars"):
+        import polars as pl
+
+        df_lib = pl
+    elif _is_lib_present("pandas"):
+        import pandas as pd
+
+        df_lib = pd
+
+    # Helper function to format threshold values using the shared formatting functions
+    def _format_threshold_value(fraction: float | None, count: int | None) -> str:
+        if fraction is not None:
+            # Format as fraction/percentage with locale formatting
+            if fraction == 0:
+                return "0"
+            elif fraction < 0.01:
+                # For very small fractions, show "<0.01" with locale formatting
+                formatted = _format_number_safe(0.01, decimals=2, locale=locale, df_lib=df_lib)
+                return f"&lt;{formatted}"
+            else:
+                # Use shared formatting function with drop_trailing_zeros
+                formatted = _format_number_safe(
+                    fraction, decimals=2, drop_trailing_zeros=True, locale=locale, df_lib=df_lib
+                )
+                return formatted
+        elif count is not None:
+            # Format integer count using shared formatting function
+            return _format_integer_safe(count, locale=locale, df_lib=df_lib)
+        else:
+            return "&mdash;"
+
+    warning = _format_threshold_value(thresholds.warning_fraction, thresholds.warning_count)
+    error = _format_threshold_value(thresholds.error_fraction, thresholds.error_count)
+    critical = _format_threshold_value(thresholds.critical_fraction, thresholds.critical_count)
+
+    warning_color = SEVERITY_LEVEL_COLORS["warning"]
+    error_color = SEVERITY_LEVEL_COLORS["error"]
+    critical_color = SEVERITY_LEVEL_COLORS["critical"]
+
+    # Build threshold parts with colored letters in monospace font
+    threshold_parts = []
+
+    # Add warning threshold if set
+    if thresholds.warning is not None:
+        threshold_parts.append(
+            f'<span style="color: {warning_color}; font-weight: bold;">W</span>:{warning}'
+        )
+
+    # Add error threshold if set
+    if thresholds.error is not None:
+        threshold_parts.append(
+            f'<span style="color: {error_color}; font-weight: bold;">E</span>:{error}'
+        )
+
+    # Add critical threshold if set
+    if thresholds.critical is not None:
+        threshold_parts.append(
+            f'<span style="color: {critical_color}; font-weight: bold;">C</span>:{critical}'
+        )
+
+    # Join with "|" separator (only between multiple thresholds)
+    thresholds_html = f'<span style="font-family: monospace;">{"|".join(threshold_parts)}</span>'
+
+    # Get localized text and format with threshold HTML
+    localized_text = NOTES_TEXT["local_threshold"].get(locale, NOTES_TEXT["local_threshold"]["en"])
+    note_html = localized_text.replace("{thresholds}", thresholds_html)
+
+    return note_html
+
+
+def _create_local_threshold_note_text(thresholds: Thresholds) -> str:
+    """
+    Create a plain text representation of local thresholds for display in logs.
+
+    This function generates a plain text representation of threshold values that is
+    suitable for display in text-based output such as logs or console output.
+
+    Parameters
+    ----------
+    thresholds
+        The Thresholds object containing the local threshold values.
+
+    Returns
+    -------
+    str
+        Plain text string containing the formatted threshold information.
+    """
+    if thresholds == Thresholds():
+        return ""
+
+    # Helper function to format threshold values
+    def _format_threshold_value(fraction: float | None, count: int | None) -> str:
+        if fraction is not None:
+            if fraction == 0:
+                return "0"
+            elif fraction < 0.01:
+                return "<0.01"
+            else:
+                return f"{fraction:.2f}".rstrip("0").rstrip(".")
+        elif count is not None:
+            return str(count)
+        else:
+            return "—"
+
+    parts = []
+
+    if thresholds.warning is not None:
+        warning = _format_threshold_value(thresholds.warning_fraction, thresholds.warning_count)
+        parts.append(f"W: {warning}")
+
+    if thresholds.error is not None:
+        error = _format_threshold_value(thresholds.error_fraction, thresholds.error_count)
+        parts.append(f"E: {error}")
+
+    if thresholds.critical is not None:
+        critical = _format_threshold_value(thresholds.critical_fraction, thresholds.critical_count)
+        parts.append(f"C: {critical}")
+
+    if parts:
+        return "Step-specific thresholds set: " + ", ".join(parts)
+    else:
+        return ""
+
+
+def _create_threshold_reset_note_html(locale: str = "en") -> str:
+    """
+    Create an HTML note for when thresholds are explicitly reset to empty.
+
+    Parameters
+    ----------
+    locale
+        The locale string (e.g., 'en', 'fr').
+
+    Returns
+    -------
+    str
+        HTML-formatted note text.
+    """
+    text = NOTES_TEXT.get("local_threshold_reset", {}).get(
+        locale, NOTES_TEXT.get("local_threshold_reset", {}).get("en", "")
+    )
+    return text
+
+
+def _create_threshold_reset_note_text() -> str:
+    """
+    Create a plain text note for when thresholds are explicitly reset to empty.
+
+    Returns
+    -------
+    str
+        Plain text note.
+    """
+    return "Global thresholds explicitly not used for this step."
+
+
+def _create_no_columns_resolved_note_html(
+    column_expr: str, available_columns: list[str], locale: str = "en"
+) -> str:
+    """
+    Create an HTML note explaining that a column expression resolved to no columns.
+
+    Parameters
+    ----------
+    column_expr
+        The column expression that failed to resolve columns (as a string).
+    available_columns
+        List of available column names in the table.
+    locale
+        The locale string (e.g., 'en', 'fr').
+
+    Returns
+    -------
+    str
+        HTML-formatted note text.
+    """
+    # Get translated strings
+    intro = NOTES_TEXT.get("column_not_found_intro", {}).get(
+        locale, NOTES_TEXT.get("column_not_found_intro", {}).get("en", "The column expression")
+    )
+    no_resolve = NOTES_TEXT.get("column_not_found_no_resolve", {}).get(
+        locale,
+        NOTES_TEXT.get("column_not_found_no_resolve", {}).get(
+            "en", "does not resolve to any columns"
+        ),
+    )
+
+    # Format the column expression with monospace font
+    col_expr_html = f"<code style='font-family: \"IBM Plex Mono\", monospace;'>{column_expr}</code>"
+
+    # Build the HTML note
+    html = f"{intro} {col_expr_html} {no_resolve}."
+
+    return html
+
+
+def _create_no_columns_resolved_note_text(column_expr: str, available_columns: list[str]) -> str:
+    """
+    Create a plain text note explaining that a column expression resolved to no columns.
+
+    Parameters
+    ----------
+    column_expr
+        The column expression that failed to resolve columns (as a string).
+    available_columns
+        List of available column names in the table.
+
+    Returns
+    -------
+    str
+        Plain text note.
+    """
+    return f"The column expression `{column_expr}` does not resolve to any columns."
+
+
+def _create_column_not_found_note_html(
+    column_name: str, available_columns: list[str], locale: str = "en"
+) -> str:
+    """
+    Create an HTML note explaining that a specific column was not found.
+
+    Parameters
+    ----------
+    column_name
+        The column name that was not found.
+    available_columns
+        List of available column names in the table.
+    locale
+        The locale string (e.g., 'en', 'fr').
+
+    Returns
+    -------
+    str
+        HTML-formatted note text.
+    """
+    # Get translated strings
+    intro = NOTES_TEXT.get("target_column_provided", {}).get(
+        locale, NOTES_TEXT.get("target_column_provided", {}).get("en", "The target column provided")
+    )
+    not_found = NOTES_TEXT.get("does_not_match_any_columns", {}).get(
+        locale,
+        NOTES_TEXT.get("does_not_match_any_columns", {}).get(
+            "en", "does not match any columns in the table"
+        ),
+    )
+
+    # Format the column name with monospace font
+    col_name_html = f"<code style='font-family: \"IBM Plex Mono\", monospace;'>{column_name}</code>"
+
+    # Build the HTML note
+    html = f"{intro} ({col_name_html}) {not_found}."
+
+    return html
+
+
+def _create_column_not_found_note_text(column_name: str, available_columns: list[str]) -> str:
+    """
+    Create a plain text note explaining that a specific column was not found.
+
+    Parameters
+    ----------
+    column_name
+        The column name that was not found.
+    available_columns
+        List of available column names in the table.
+
+    Returns
+    -------
+    str
+        Plain text note.
+    """
+    return f"The target column provided ({column_name}) does not match any columns in the table."
+
+
+def _create_comparison_column_not_found_note_html(
+    column_name: str, position: str | None, available_columns: list[str], locale: str = "en"
+) -> str:
+    """
+    Create an HTML note explaining that a comparison column was not found.
+
+    Parameters
+    ----------
+    column_name
+        The comparison column name that was not found.
+    position
+        Optional position indicator ("left", "right") for between/outside validations.
+    available_columns
+        List of available column names in the table.
+    locale
+        The locale string (e.g., 'en', 'fr').
+
+    Returns
+    -------
+    str
+        HTML-formatted note text.
+    """
+    # Get translated strings
+    intro = NOTES_TEXT.get("comparison_column_provided", {}).get(
+        locale,
+        NOTES_TEXT.get("comparison_column_provided", {}).get(
+            "en", "The comparison column provided"
+        ),
+    )
+    intro_with_for = NOTES_TEXT.get("comparison_column_for", {}).get(
+        locale,
+        NOTES_TEXT.get("comparison_column_for", {}).get("en", "The comparison column provided for"),
+    )
+    not_found = NOTES_TEXT.get("does_not_match_any_columns", {}).get(
+        locale,
+        NOTES_TEXT.get("does_not_match_any_columns", {}).get(
+            "en", "does not match any columns in the table"
+        ),
+    )
+
+    # Format the column name with monospace font
+    col_name_html = f"<code style='font-family: \"IBM Plex Mono\", monospace;'>{column_name}</code>"
+
+    # Add position if provided (for between/outside validations)
+    if position:
+        # Format position parameter with monospace font (e.g., "left=", "right=")
+        position_param = (
+            f"<code style='font-family: \"IBM Plex Mono\", monospace;'>{position}=</code>"
+        )
+        # Use the "for" version of the intro text
+        html = f"{intro_with_for} {position_param} ({col_name_html}) {not_found}."
+    else:
+        # Use the standard intro text without "for"
+        html = f"{intro} ({col_name_html}) {not_found}."
+
+    return html
+
+
+def _create_comparison_column_not_found_note_text(
+    column_name: str, position: str | None, available_columns: list[str]
+) -> str:
+    """
+    Create a plain text note explaining that a comparison column was not found.
+
+    Parameters
+    ----------
+    column_name
+        The comparison column name that was not found.
+    position
+        Optional position indicator ("left", "right") for between/outside validations.
+    available_columns
+        List of available column names in the table.
+
+    Returns
+    -------
+    str
+        Plain text note.
+    """
+    if position:
+        position_text = f" for {position}="
+    else:
+        position_text = ""
+
+    return (
+        f"The comparison column provided{position_text} ({column_name}) "
+        f"does not match any columns in the table."
+    )
+
+
+def _create_preprocessing_note_html(
+    original_rows: int,
+    original_cols: int,
+    processed_rows: int,
+    processed_cols: int,
+    locale: str = "en",
+) -> str:
+    """
+    Create an HTML note showing table dimension changes from preprocessing.
+
+    Parameters
+    ----------
+    original_rows
+        Number of rows in the original table.
+    original_cols
+        Number of columns in the original table.
+    processed_rows
+        Number of rows after preprocessing.
+    processed_cols
+        Number of columns after preprocessing.
+    locale
+        The locale string (e.g., 'en', 'fr').
+
+    Returns
+    -------
+    str
+        HTML-formatted note text.
+    """
+    # Get translated strings
+    precondition_text = NOTES_TEXT.get("precondition_applied", {}).get(
+        locale, NOTES_TEXT.get("precondition_applied", {}).get("en", "Precondition applied")
+    )
+    table_dims_text = NOTES_TEXT.get("table_dimensions", {}).get(
+        locale, NOTES_TEXT.get("table_dimensions", {}).get("en", "table dimensions")
+    )
+
+    # Helper function to get singular or plural form
+    def get_row_text(count: int) -> str:
+        if count == 1:
+            return NOTES_TEXT.get("row", {}).get(locale, NOTES_TEXT.get("row", {}).get("en", "row"))
+        return NOTES_TEXT.get("rows", {}).get(locale, NOTES_TEXT.get("rows", {}).get("en", "rows"))
+
+    def get_col_text(count: int) -> str:
+        if count == 1:
+            return NOTES_TEXT.get("column", {}).get(
+                locale, NOTES_TEXT.get("column", {}).get("en", "column")
+            )
+        return NOTES_TEXT.get("columns", {}).get(
+            locale, NOTES_TEXT.get("columns", {}).get("en", "columns")
+        )
+
+    # Determine which dimensions changed
+    rows_changed = original_rows != processed_rows
+    cols_changed = original_cols != processed_cols
+
+    # Format original dimensions
+    original_rows_text = get_row_text(original_rows)
+    original_cols_text = get_col_text(original_cols)
+    original_dim = (
+        f'<span style="font-family: monospace;">'
+        f"[{original_rows:,} {original_rows_text}, {original_cols} {original_cols_text}]"
+        f"</span>"
+    )
+
+    # Format processed dimensions with bold for changed values
+    processed_rows_text = get_row_text(processed_rows)
+    processed_cols_text = get_col_text(processed_cols)
+
+    if rows_changed:
+        rows_display = f"<strong>{processed_rows:,}</strong> {processed_rows_text}"
+    else:
+        rows_display = f"{processed_rows:,} {processed_rows_text}"
+
+    if cols_changed:
+        cols_display = f"<strong>{processed_cols}</strong> {processed_cols_text}"
+    else:
+        cols_display = f"{processed_cols} {processed_cols_text}"
+
+    processed_dim = f'<span style="font-family: monospace;">[{rows_display}, {cols_display}]</span>'
+
+    # Build the HTML note
+    html = f"{precondition_text}: {table_dims_text} {original_dim} → {processed_dim}."
+
+    return html
+
+
+def _create_preprocessing_note_text(
+    original_rows: int,
+    original_cols: int,
+    processed_rows: int,
+    processed_cols: int,
+) -> str:
+    """
+    Create a plain text note showing table dimension changes from preprocessing.
+
+    Parameters
+    ----------
+    original_rows
+        Number of rows in the original table.
+    original_cols
+        Number of columns in the original table.
+    processed_rows
+        Number of rows after preprocessing.
+    processed_cols
+        Number of columns after preprocessing.
+
+    Returns
+    -------
+    str
+        Plain text note.
+    """
+    # Get singular or plural forms
+    original_rows_text = "row" if original_rows == 1 else "rows"
+    original_cols_text = "column" if original_cols == 1 else "columns"
+    processed_rows_text = "row" if processed_rows == 1 else "rows"
+    processed_cols_text = "column" if processed_cols == 1 else "columns"
+
+    return (
+        f"Precondition applied: table dimensions "
+        f"[{original_rows:,} {original_rows_text}, {original_cols} {original_cols_text}] → "
+        f"[{processed_rows:,} {processed_rows_text}, {processed_cols} {processed_cols_text}]."
+    )
+
+
+def _create_preprocessing_no_change_note_html(locale: str = "en") -> str:
+    """
+    Create an HTML note indicating preprocessing was applied with no dimension change.
+
+    Parameters
+    ----------
+    locale
+        The locale string (e.g., 'en', 'fr').
+
+    Returns
+    -------
+    str
+        HTML-formatted note text.
+    """
+    # Get translated string
+    note_text = NOTES_TEXT.get("precondition_applied_no_change", {}).get(
+        locale,
+        NOTES_TEXT.get("precondition_applied_no_change", {}).get(
+            "en", "Precondition applied: no table dimension change"
+        ),
+    )
+
+    return f"{note_text}."
+
+
+def _create_preprocessing_no_change_note_text() -> str:
+    """
+    Create a plain text note indicating preprocessing was applied with no dimension change.
+
+    Returns
+    -------
+    str
+        Plain text note.
+    """
+    return "Precondition applied: no table dimension change."
+
+
+def _create_synthetic_target_column_note_html(column_name: str, locale: str = "en") -> str:
+    """
+    Create an HTML note indicating that the target column was created via preprocessing.
+
+    Parameters
+    ----------
+    column_name
+        The name of the synthetic target column.
+    locale
+        The locale string (e.g., 'en', 'fr').
+
+    Returns
+    -------
+    str
+        HTML-formatted note text.
+    """
+    # Get translated strings
+    synthetic_text = NOTES_TEXT.get("synthetic_target_column", {}).get(
+        locale, NOTES_TEXT.get("synthetic_target_column", {}).get("en", "Synthetic target column")
+    )
+    created_via_text = NOTES_TEXT.get("created_via_preprocessing", {}).get(
+        locale,
+        NOTES_TEXT.get("created_via_preprocessing", {}).get("en", "created via preprocessing"),
+    )
+
+    # Format the column name with monospace font
+    col_name_html = f"<code style='font-family: \"IBM Plex Mono\", monospace;'>{column_name}</code>"
+
+    # Build the HTML note
+    html = f"{synthetic_text} {col_name_html} {created_via_text}."
+
+    return html
+
+
+def _create_synthetic_target_column_note_text(column_name: str) -> str:
+    """
+    Create a plain text note indicating that the target column was created via preprocessing.
+
+    Parameters
+    ----------
+    column_name
+        The name of the synthetic target column.
+
+    Returns
+    -------
+    str
+        Plain text note.
+    """
+    return f"Synthetic target column ({column_name}) created via preprocessing."
+
+
+def _create_col_schema_match_note_html(schema_info: dict, locale: str = "en") -> str:
+    """
+    Create an HTML note with collapsible schema expectation and results.
+
+    This generates a disclosure-style note showing:
+    1. A summary of what failed (if anything)
+    2. The full step report table (collapsible)
+
+    Parameters
+    ----------
+    schema_info
+        The schema validation information dictionary from interrogation.
+    locale
+        The locale string (e.g., 'en', 'fr').
+
+    Returns
+    -------
+    str
+        HTML-formatted note with collapsible schema details.
+    """
+    passed = schema_info["passed"]
+    expect_schema = schema_info["expect_schema"]
+    target_schema = schema_info["target_schema"]
+    params = schema_info["params"]
+    columns_dict = schema_info["columns"]
+    in_order = params["in_order"]
+
+    # Get translations for the locale
+    passed_text = VALIDATION_REPORT_TEXT["note_schema_comparison_passed"].get(
+        locale, VALIDATION_REPORT_TEXT["note_schema_comparison_passed"]["en"]
+    )
+    failed_text = VALIDATION_REPORT_TEXT["note_schema_comparison_failed"].get(
+        locale, VALIDATION_REPORT_TEXT["note_schema_comparison_failed"]["en"]
+    )
+    disclosure_text = VALIDATION_REPORT_TEXT["note_schema_comparison_disclosure"].get(
+        locale, VALIDATION_REPORT_TEXT["note_schema_comparison_disclosure"]["en"]
+    )
+    settings_title_text = VALIDATION_REPORT_TEXT["note_schema_comparison_match_settings_title"].get(
+        locale, VALIDATION_REPORT_TEXT["note_schema_comparison_match_settings_title"]["en"]
+    )
+
+    # Build summary message
+    if passed:
+        summary = f'<span style="color:#4CA64C;">✓</span> {passed_text}.'
+    else:
+        # Analyze what failed
+        failures = []
+
+        # Check column count mismatch
+        n_expect = len(expect_schema)
+        n_target = len(target_schema)
+        if n_expect != n_target:
+            count_mismatch_text = VALIDATION_REPORT_TEXT["note_schema_column_count_mismatch"].get(
+                locale, VALIDATION_REPORT_TEXT["note_schema_column_count_mismatch"]["en"]
+            )
+            failures.append(count_mismatch_text.format(n_expect=n_expect, n_target=n_target))
+
+        # Check for unmatched columns
+        unmatched_cols = [col for col, info in columns_dict.items() if not info["colname_matched"]]
+        if unmatched_cols:
+            unmatched_text = VALIDATION_REPORT_TEXT["note_schema_unmatched_columns"].get(
+                locale, VALIDATION_REPORT_TEXT["note_schema_unmatched_columns"]["en"]
+            )
+            failures.append(unmatched_text.format(n=len(unmatched_cols)))
+
+        # Check for wrong order (if in_order=True)
+        if params["in_order"]:
+            wrong_order = [
+                col
+                for col, info in columns_dict.items()
+                if info["colname_matched"] and not info["index_matched"]
+            ]
+            if wrong_order:
+                wrong_order_text = VALIDATION_REPORT_TEXT["note_schema_wrong_order"].get(
+                    locale, VALIDATION_REPORT_TEXT["note_schema_wrong_order"]["en"]
+                )
+                failures.append(wrong_order_text.format(n=len(wrong_order)))
+
+        # Check for dtype mismatches
+        dtype_mismatches = [
+            col
+            for col, info in columns_dict.items()
+            if info["colname_matched"] and info["dtype_present"] and not info["dtype_matched"]
+        ]
+        if dtype_mismatches:
+            dtype_mismatch_text = VALIDATION_REPORT_TEXT["note_schema_dtype_mismatch"].get(
+                locale, VALIDATION_REPORT_TEXT["note_schema_dtype_mismatch"]["en"]
+            )
+            failures.append(dtype_mismatch_text.format(n=len(dtype_mismatches)))
+
+        if failures:
+            summary = (
+                f'<span style="color:#FF3300;">✗</span> {failed_text}: ' + ", ".join(failures) + "."
+            )
+        else:
+            summary = f'<span style="color:#FF3300;">✗</span> {failed_text}.'
+
+    # Generate the step report table using the existing function
+    # We'll call either _step_report_schema_in_order or _step_report_schema_any_order
+    # depending on the in_order parameter
+    if in_order:
+        step_report_gt = _step_report_schema_in_order(
+            step=1, schema_info=schema_info, header=None, lang=locale, debug_return_df=False
+        )
+    else:
+        step_report_gt = _step_report_schema_any_order(
+            step=1, schema_info=schema_info, header=None, lang=locale, debug_return_df=False
+        )
+
+    # Generate the settings HTML using the existing function
+    settings_html = _create_col_schema_match_params_html(
+        lang=locale,
+        complete=params["complete"],
+        in_order=params["in_order"],
+        case_sensitive_colnames=params["case_sensitive_colnames"],
+        case_sensitive_dtypes=params["case_sensitive_dtypes"],
+        full_match_dtypes=params["full_match_dtypes"],
+    )
+
+    # Remove the inner div containing column_schema_match_str
+    settings_html = re.sub(r'<div style="margin-right: 5px;">.*?</div>', "", settings_html, count=1)
+
+    # Change padding-top from 7px to 2px
+    settings_html = settings_html.replace("padding-top: 7px;", "padding-top: 2px;")
+
+    # Create new source note HTML that includes both settings and schema
+    source_note_html = f"""
+<div style='padding-bottom: 2px;'>{settings_title_text}</div>
+<div style='padding-bottom: 4px;'>{settings_html}</div>
+"""
+
+    # Add the settings as an additional source note to the step report
+    step_report_gt = step_report_gt.tab_source_note(source_note=html(source_note_html))
+
+    # Extract the HTML from the GT object
+    step_report_html = step_report_gt._repr_html_()
+
+    # Create collapsible section with the step report
+    note_html = f"""
+{summary}
+
+<details style="margin-top: 2px; margin-bottom: 8px; font-size: 12px; text-indent: 12px;">
+<summary style="cursor: pointer; font-weight: bold; color: #555; margin-bottom: -5px;">{disclosure_text}</summary>
+<div style="margin-top: 6px; padding-left: 15px; padding-right: 15px;">
+
+{step_report_html}
+
+</div>
+</details>
+"""
+
+    return note_html.strip()
+
+
+def _create_col_schema_match_note_text(schema_info: dict) -> str:
+    """
+    Create a plain text note for schema validation.
+
+    Parameters
+    ----------
+    schema_info
+        The schema validation information dictionary from interrogation.
+
+    Returns
+    -------
+    str
+        Plain text note.
+    """
+    passed = schema_info["passed"]
+    expect_schema = schema_info["expect_schema"]
+    target_schema = schema_info["target_schema"]
+
+    if passed:
+        return f"Schema validation passed. Expected {len(expect_schema)} column(s), found {len(target_schema)}."
+    else:
+        return f"Schema validation failed. Expected {len(expect_schema)} column(s), found {len(target_schema)}."
 
 
 def _step_report_row_based(
@@ -17166,16 +19727,33 @@ def _step_report_schema_in_order(
     dtype_exp = []
     dtype_exp_correct = []
 
-    for i in range(len(exp_columns_dict)):
+    for i in range(len(expect_schema)):
         #
         # `col_name_exp` values
         #
 
-        # The column name is the key in the dictionary, get the column name and
-        # append it to the `col_name_exp` list
-        col_name_exp.append(list(exp_columns_dict.keys())[i])
+        # Get the column name from expect_schema (which can have duplicates)
+        column_name_exp_i = expect_schema[i][0]
+        col_name_exp.append(column_name_exp_i)
 
-        column_name_exp_i = col_name_exp[i]
+        # Check if this column exists in exp_columns_dict (it might not if it's a duplicate)
+        # For duplicates, we need to handle them specially
+        if column_name_exp_i not in exp_columns_dict:
+            # This is a duplicate or invalid column, mark it as incorrect
+            col_exp_correct.append(CROSS_MARK_SPAN)
+
+            # For dtype, check if there's a dtype specified in the schema
+            if len(expect_schema[i]) > 1:
+                dtype_value = expect_schema[i][1]
+                if isinstance(dtype_value, list):
+                    dtype_exp.append(" | ".join(dtype_value))
+                else:
+                    dtype_exp.append(str(dtype_value))
+            else:
+                dtype_exp.append("&mdash;")
+
+            dtype_exp_correct.append("&mdash;")
+            continue
 
         #
         # `col_exp_correct` values

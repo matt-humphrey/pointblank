@@ -2,7 +2,7 @@
 
 <a href="https://posit-dev.github.io/pointblank/"><img src="https://posit-dev.github.io/pointblank/assets/pointblank_logo.svg" width="75%"/></a>
 
-_Datavalidatie gemaakt mooi en krachtig_
+_Datavalidatie toolkit voor het beoordelen en monitoren van datakwaliteit_
 
 [![Python Versions](https://img.shields.io/pypi/pyversions/pointblank.svg)](https://pypi.python.org/pypi/pointblank)
 [![PyPI](https://img.shields.io/pypi/v/pointblank)](https://pypi.org/project/pointblank/#history)
@@ -309,7 +309,7 @@ pb run validation.py --exit-code
 - **Praktische uitvoer**: Krijg precies wat je nodig hebt: aantallen, extracten, samenvattingen of volledige rapporten
 - **Flexibele implementatie**: Gebruik in notebooks, scripts of datapipelines
 - **Aanpasbaar**: Stem validatiestappen en rapportage af op jouw specifieke behoeften
-- **Internationalisatie**: Rapporten kunnen worden gegenereerd in meer dan 20 talen, waaronder Engels, Spaans, Frans en Duits
+- **Internationalisatie**: Rapporten kunnen worden gegenereerd in 40 talen, waaronder Engels, Spaans, Frans en Duits
 
 ## Documentatie en voorbeelden
 

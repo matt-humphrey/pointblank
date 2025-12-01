@@ -1,8 +1,13 @@
+> [!TIP]
+> **📺 Featured Talk: ['Making Things Nice in Python'](https://www.youtube.com/watch?v=J6e2BKjHyPg)**
+>
+> Discover how Pointblank and Great Tables (used in this library) prioritize user experience in Python package design. I go over why convenient options, extensive documentation, and thoughtful API decisions is better for everyone (even when they challenge conventional Python patterns/practices).
+
 <div align="center">
 
 <a href="https://posit-dev.github.io/pointblank/"><img src="https://posit-dev.github.io/pointblank/assets/pointblank_logo.svg" width="85%"/></a>
 
-_Data validation made beautiful and powerful_
+_Data validation toolkit for assessing and monitoring data quality._
 
 [![Python Versions](https://img.shields.io/pypi/pyversions/pointblank.svg)](https://pypi.python.org/pypi/pointblank)
 [![PyPI](https://img.shields.io/pypi/v/pointblank)](https://pypi.org/project/pointblank/#history)
@@ -356,7 +361,7 @@ Click the following headings to see some video demonstrations of the CLI:
 - **Practical outputs**: Get exactly what you need: counts, extracts, summaries, or full reports
 - **Flexible deployment**: Use in notebooks, scripts, or data pipelines
 - **Customizable**: Tailor validation steps and reporting to your specific needs
-- **Internationalization**: Reports can be generated in over 20 languages, including English, Spanish, French, and German
+- **Internationalization**: Reports can be generated in 40 languages, including English, Spanish, French, and German
 
 ## Documentation and Examples
 

@@ -85,16 +85,19 @@ from pointblank._constants import REPORTING_LANGUAGES
 from pointblank.validate import (
     Actions,
     FinalActions,
+    config,
     connect_to_table,
     get_action_metadata,
     get_column_count,
     get_data_path,
     get_row_count,
     get_validation_summary,
+    global_config,
     load_dataset,
     missing_vals_tbl,
     PointblankConfig,
     preview,
+    print_database_tables,
     read_file,
     Validate,
     write_file,
@@ -723,6 +726,7 @@ def test_validation_plan_and_interrogation(request, tbl_fixture):
         "val_info",
         "time_processed",
         "proc_duration_s",
+        "notes",
     ]
 
     # Check the attributes of the `validation_info` object
@@ -754,6 +758,7 @@ def test_validation_plan_and_interrogation(request, tbl_fixture):
     assert val_info.val_info is None
     assert val_info.time_processed is None
     assert val_info.proc_duration_s is None
+    assert val_info.notes is None
 
     # Interrogate the validation plan
     v_int = v.interrogate()
@@ -803,6 +808,7 @@ def test_validation_plan_and_interrogation(request, tbl_fixture):
         "val_info",
         "time_processed",
         "proc_duration_s",
+        "notes",
     ]
 
     # Check the attributes of the `validation_info` object
@@ -834,6 +840,7 @@ def test_validation_plan_and_interrogation(request, tbl_fixture):
     assert val_info.val_info is None
     assert isinstance(val_info.time_processed, str)
     assert val_info.proc_duration_s > 0.0
+    assert val_info.notes is None
 
 
 @pytest.mark.parametrize("tbl_fixture", TBL_LIST)
@@ -9729,6 +9736,7 @@ def test_seg_group_with_auto_brief():
 
 
 def test_process_action_str():
+    """Test the _process_action_str() function."""
     datetime_val = str(datetime.datetime(2025, 1, 1, 0, 0, 0, 0))
 
     partial_process_action_str = partial(
@@ -9761,6 +9769,7 @@ def test_process_action_str():
 
 
 def test_process_data_dataframe_passthrough_polars():
+    """Test that _process_data() returns the same Polars DataFrame object."""
     pl = pytest.importorskip("polars")
 
     # Create test DataFrame
@@ -9771,6 +9780,926 @@ def test_process_data_dataframe_passthrough_polars():
 
     # Should be the same object
     assert result is df
+
+
+def test_notes_field_initialization():
+    """Test that the notes field is properly initialized."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    # Access the validation info
+    val_info = validation.validation_info[0]
+
+    # Notes should be None initially
+    assert val_info.notes is None
+
+
+def test_add_note_basic():
+    """Test adding a basic note to a validation step."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    # Access the validation info
+    val_info = validation.validation_info[0]
+
+    # Add a note
+    val_info._add_note(
+        key="test_note", markdown="This is a **test** note", text="This is a test note"
+    )
+
+    # Verify note was added
+    assert val_info.notes is not None
+    assert "test_note" in val_info.notes
+    assert val_info.notes["test_note"]["markdown"] == "This is a **test** note"
+    assert val_info.notes["test_note"]["text"] == "This is a test note"
+
+
+def test_add_note_without_text():
+    """Test adding a note without explicit text version."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+
+    # Add a note without text parameter
+    val_info._add_note(key="test_note", markdown="This is a **test** note")
+
+    # Text should default to markdown
+    assert val_info.notes["test_note"]["text"] == "This is a **test** note"
+
+
+def test_add_multiple_notes():
+    """Test adding multiple notes to a validation step."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+
+    # Add multiple notes
+    val_info._add_note(key="note1", markdown="First note")
+    val_info._add_note(key="note2", markdown="Second note")
+    val_info._add_note(key="note3", markdown="Third note")
+
+    # Verify all notes were added
+    assert len(val_info.notes) == 3
+    assert "note1" in val_info.notes
+    assert "note2" in val_info.notes
+    assert "note3" in val_info.notes
+
+
+def test_note_key_overwrite():
+    """Test that adding a note with the same key overwrites the previous one."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+
+    # Add a note
+    val_info._add_note(key="test", markdown="First version")
+    assert val_info.notes["test"]["markdown"] == "First version"
+
+    # Overwrite with same key
+    val_info._add_note(key="test", markdown="Second version")
+    assert val_info.notes["test"]["markdown"] == "Second version"
+    assert len(val_info.notes) == 1  # Should still only have one note
+
+
+def test_notes_persist_through_interrogation():
+    """Test that notes persist through interrogation."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+    val_info._add_note(key="pre_interrogation", markdown="Note added before interrogation")
+
+    # Interrogate
+    validation.interrogate()
+
+    # Note should still be present
+    assert validation.validation_info[0].notes is not None
+    assert "pre_interrogation" in validation.validation_info[0].notes
+
+
+def test_notes_in_validation_info_dict():
+    """Test that notes are included when converting validation info to dict."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+    val_info._add_note(key="test", markdown="Test note")
+
+    # Interrogate to trigger validation info processing
+    validation.interrogate()
+
+    # Get the validation info as dict (this is used in JSON export)
+    from pointblank.validate import _validation_info_as_dict
+
+    val_dict = _validation_info_as_dict(validation.validation_info)
+
+    # Verify notes field is present
+    assert "notes" in val_dict
+    assert val_dict["notes"][0]["test"]["markdown"] == "Test note"
+
+
+def test_notes_display_in_report():
+    """Test that notes are properly displayed in the tabular report."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3, 4, 5]}))
+    validation.col_vals_gt(columns="a", value=0)
+    validation.col_vals_lt(columns="a", value=10)
+
+    # Add notes to steps
+    validation.validation_info[0]._add_note(
+        key="note1", markdown="First validation note with **emphasis**"
+    )
+    validation.validation_info[1]._add_note(key="note2", markdown="Second validation note")
+
+    # Interrogate
+    validation.interrogate()
+
+    # Get the report
+    report = validation.get_tabular_report()
+
+    # The report should be a GT object
+    assert report is not None
+
+    # Convert to HTML to check for notes
+    html_str = report.as_raw_html()
+
+    # Check that notes section is present
+    assert "Notes" in html_str
+
+    # Check for styled step labels (uppercase small caps bold)
+    assert "Step 1" in html_str
+    assert "font-variant: small-caps" in html_str
+    assert "text-transform: uppercase" in html_str
+
+    # Check that markdown is rendered (bold emphasis should be rendered as <strong>)
+    assert "emphasis" in html_str
+    assert "Step 2" in html_str
+    assert "Second validation note" in html_str
+
+
+def test_empty_notes_no_display():
+    """Test that no notes section appears when there are no notes."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+    validation.interrogate()
+
+    # Get the report
+    report = validation.get_tabular_report()
+    html_str = report.as_raw_html()
+
+    # The generic "Notes" header should not appear if there are no notes
+    # (we look for it in a specific style to avoid false positives)
+    assert "border-top: 1px solid #D3D3D3" not in html_str or "Notes</div>" not in html_str
+
+
+def test_notes_ordering_preserved():
+    """Test that notes maintain insertion order."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+
+    # Add notes in specific order
+    val_info._add_note(key="z_note", markdown="Z note")
+    val_info._add_note(key="a_note", markdown="A note")
+    val_info._add_note(key="m_note", markdown="M note")
+
+    # Verify order is preserved (Python dicts maintain insertion order in 3.7+)
+    keys = list(val_info.notes.keys())
+    assert keys == ["z_note", "a_note", "m_note"]
+
+
+def test_get_notes_dict_format():
+    """Test getting notes in dictionary format."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+
+    # Add some notes
+    val_info._add_note(key="note1", markdown="First **note**", text="First note")
+    val_info._add_note(key="note2", markdown="Second note")
+
+    # Get notes as dict (default)
+    notes = val_info._get_notes()
+    assert notes is not None
+    assert len(notes) == 2
+    assert notes["note1"]["markdown"] == "First **note**"
+    assert notes["note1"]["text"] == "First note"
+    assert notes["note2"]["markdown"] == "Second note"
+
+    # Explicitly request dict format
+    notes_dict = val_info._get_notes(format="dict")
+    assert notes_dict == notes
+
+
+def test_get_notes_markdown_format():
+    """Test getting notes as a list of markdown strings."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+
+    val_info._add_note(key="note1", markdown="First **note**", text="First note")
+    val_info._add_note(key="note2", markdown="Second *note*")
+
+    markdown_notes = val_info._get_notes(format="markdown")
+    assert markdown_notes == ["First **note**", "Second *note*"]
+
+
+def test_get_notes_text_format():
+    """Test getting notes as a list of text strings."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+
+    val_info._add_note(key="note1", markdown="First **note**", text="First note")
+    val_info._add_note(key="note2", markdown="Second *note*", text="Second note")
+
+    text_notes = val_info._get_notes(format="text")
+    assert text_notes == ["First note", "Second note"]
+
+
+def test_get_notes_keys_format():
+    """Test getting note keys."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+
+    val_info._add_note(key="alpha", markdown="Alpha")
+    val_info._add_note(key="beta", markdown="Beta")
+    val_info._add_note(key="gamma", markdown="Gamma")
+
+    keys = val_info._get_notes(format="keys")
+    assert keys == ["alpha", "beta", "gamma"]
+
+
+def test_get_notes_no_notes():
+    """Test that get_notes() returns None when there are no notes."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+
+    assert val_info._get_notes() is None
+    assert val_info._get_notes(format="markdown") is None
+    assert val_info._get_notes(format="text") is None
+    assert val_info._get_notes(format="keys") is None
+
+
+def test_get_notes_invalid_format():
+    """Test that invalid format raises ValueError."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+    val_info._add_note(key="test", markdown="Test")
+
+    with pytest.raises(ValueError, match="Invalid format"):
+        val_info._get_notes(format="invalid")
+
+
+def test_get_note_dict_format():
+    """Test getting a specific note in dictionary format."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+    val_info._add_note(key="test_note", markdown="Test **markdown**", text="Test text")
+
+    # Get note as dict (default)
+    note = val_info._get_note(key="test_note")
+    assert note == {"markdown": "Test **markdown**", "text": "Test text"}
+
+    # Explicitly request dict format
+    note_dict = val_info._get_note(key="test_note", format="dict")
+    assert note_dict == note
+
+
+def test_get_note_markdown_format():
+    """Test getting a specific note's markdown."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+    val_info._add_note(key="test_note", markdown="Test **markdown**", text="Test text")
+
+    markdown = val_info._get_note(key="test_note", format="markdown")
+    assert markdown == "Test **markdown**"
+
+
+def test_get_note_text_format():
+    """Test getting a specific note's text."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+    val_info._add_note(key="test_note", markdown="Test **markdown**", text="Test text")
+
+    text = val_info._get_note(key="test_note", format="text")
+    assert text == "Test text"
+
+
+def test_get_note_not_found():
+    """Test that get_note() returns None for a non-existent key."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+    val_info._add_note(key="existing", markdown="Exists")
+
+    assert val_info._get_note(key="nonexistent") is None
+    assert val_info._get_note(key="nonexistent", format="markdown") is None
+    assert val_info._get_note(key="nonexistent", format="text") is None
+
+
+def test_get_note_no_notes():
+    """Test that get_note() returns None when no notes exist."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+
+    assert val_info._get_note("any_key") is None
+
+
+def test_get_note_invalid_format():
+    """Test that an invalid format raises a ValueError."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+    val_info._add_note(key="test", markdown="Test")
+
+    with pytest.raises(ValueError, match="Invalid format"):
+        val_info._get_note("test", format="invalid")
+
+
+def test_has_notes():
+    """Test the has_notes() method."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    val_info = validation.validation_info[0]
+
+    # Initially no notes
+    assert val_info._has_notes() is False
+
+    # Add a note
+    val_info._add_note(key="test", markdown="Test")
+    assert val_info._has_notes() is True
+
+
+def test_get_step_notes_basic():
+    """Test getting notes by step number."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+    validation.col_vals_lt(columns="a", value=10)
+
+    # Add notes to steps
+    validation.validation_info[0]._add_note(
+        key="note1", markdown="First **note**", text="First note"
+    )
+    validation.validation_info[1]._add_note(
+        key="note2", markdown="Second *note*", text="Second note"
+    )
+
+    # Interrogate to set step numbers
+    validation.interrogate()
+
+    # Get notes from step 1
+    notes_step_1 = validation.get_notes(i=1)
+
+    assert notes_step_1 is not None
+    assert "note1" in notes_step_1
+    assert notes_step_1["note1"]["markdown"] == "First **note**"
+
+    # Get notes from step 2
+    notes_step_2 = validation.get_notes(i=2)
+
+    assert notes_step_2 is not None
+    assert "note2" in notes_step_2
+    assert notes_step_2["note2"]["markdown"] == "Second *note*"
+
+
+def test_get_step_notes_formats():
+    """Test getting notes by step number in different formats."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    validation.validation_info[0]._add_note(
+        key="alpha", markdown="Alpha **note**", text="Alpha note"
+    )
+    validation.validation_info[0]._add_note(key="beta", markdown="Beta *note*", text="Beta note")
+
+    validation.interrogate()
+
+    # Get in markdown format
+    markdown_notes = validation.get_notes(i=1, format="markdown")
+    assert markdown_notes == ["Alpha **note**", "Beta *note*"]
+
+    # Get in text format
+    text_notes = validation.get_notes(i=1, format="text")
+    assert text_notes == ["Alpha note", "Beta note"]
+
+    # Get keys
+    keys = validation.get_notes(i=1, format="keys")
+    assert keys == ["alpha", "beta"]
+
+
+def test_get_step_notes_no_notes():
+    """Test get_step_notes() returns None when step has no notes."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+    validation.interrogate()
+
+    # Step exists but has no notes
+    assert validation.get_notes(i=1) is None
+
+
+def test_get_step_notes_invalid_step():
+    """Test get_step_notes() returns None for non-existent step."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+    validation.interrogate()
+
+    # Step doesn't exist
+    assert validation.get_notes(i=99) is None
+
+
+def test_get_step_notes_invalid_step_number():
+    """Test get_step_notes() raises error for invalid step number."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+    validation.interrogate()
+
+    # Negative step number
+    with pytest.raises(ValueError, match="Step number must be a positive integer"):
+        validation.get_notes(i=-1)
+
+    # Zero step number
+    with pytest.raises(ValueError, match="Step number must be a positive integer"):
+        validation.get_notes(i=0)
+
+    # Non-integer step number
+    with pytest.raises(ValueError, match="Step number must be a positive integer"):
+        validation.get_notes(i="1")
+
+
+def test_get_step_notes_before_interrogation():
+    """Test get_step_notes() works before interrogation."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    validation.validation_info[0]._add_note(key="test", markdown="Test note")
+
+    # Before interrogation, step numbers aren't set, so this should return None
+    # because validation.i is None
+    assert validation.get_notes(i=1) is None
+
+
+def test_get_step_notes_with_segments():
+    """Test get_step_notes() with segmented validation steps."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3], "category": ["A", "B", "A"]}))
+    validation.col_vals_gt(columns="a", value=0, segments="category")
+
+    # Add note before segmentation expansion
+    validation.validation_info[0]._add_note(key="seg_note", markdown="Segmented validation")
+
+    validation.interrogate()
+
+    # After interrogation with segments, multiple steps are created
+    # Each segment gets its own step number
+    # We should be able to get notes from the first segment step
+    notes = validation.get_notes(i=1)
+    assert notes is not None
+    assert "seg_note" in notes
+
+
+def test_validate_get_note_basic():
+    """Test get_note() method at Validate level with step number and key."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    # Add notes to step 1
+    validation.validation_info[0]._add_note(
+        key="note1", markdown="First **note**", text="First note"
+    )
+    validation.validation_info[0]._add_note(
+        key="note2", markdown="Second *note*", text="Second note"
+    )
+
+    validation.interrogate()
+
+    # Get specific note by step number and key
+    note1 = validation.get_note(i=1, key="note1")
+    assert note1 is not None
+    assert note1["markdown"] == "First **note**"
+    assert note1["text"] == "First note"
+
+    note2 = validation.get_note(i=1, key="note2")
+    assert note2 is not None
+    assert note2["markdown"] == "Second *note*"
+    assert note2["text"] == "Second note"
+
+
+def test_validate_get_note_formats():
+    """Test get_note() with different format options."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    validation.validation_info[0]._add_note(
+        key="test", markdown="Test **markdown**", text="Test markdown"
+    )
+
+    validation.interrogate()
+
+    # Dict format (default)
+    note_dict = validation.get_note(i=1, key="test")
+    assert isinstance(note_dict, dict)
+    assert note_dict["markdown"] == "Test **markdown**"
+
+    # Markdown format
+    markdown = validation.get_note(i=1, key="test", format="markdown")
+    assert markdown == "Test **markdown**"
+
+    # Text format
+    text = validation.get_note(i=1, key="test", format="text")
+    assert text == "Test markdown"
+
+
+def test_validate_get_note_not_found():
+    """Test get_note() when note key doesn't exist."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    validation.validation_info[0]._add_note(key="exists", markdown="Exists")
+
+    validation.interrogate()
+
+    # Non-existent note key
+    assert validation.get_note(i=1, key="nonexistent") is None
+
+
+def test_validate_get_note_invalid_step():
+    """Test get_note() with invalid step number."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    validation.validation_info[0]._add_note(key="test", markdown="Test")
+
+    validation.interrogate()
+
+    # Non-existent step number
+    assert validation.get_note(99, "test") is None
+
+
+def test_validate_get_note_invalid_step_number():
+    """Test get_note() with invalid step number types."""
+    validation = Validate(data=pl.DataFrame({"a": [1, 2, 3]}))
+    validation.col_vals_gt(columns="a", value=0)
+
+    validation.interrogate()
+
+    # Invalid step number (zero)
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        validation.get_note(i=0, key="test")
+
+    # Invalid step number (negative)
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        validation.get_note(i=-1, key="test")
+
+
+def test_column_not_found_note_basic():
+    """Test that no_columns_resolved note is generated when selector matches no columns."""
+    from pointblank.column import starts_with
+
+    validation = (
+        Validate(data=pl.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}))
+        .col_vals_gt(columns=starts_with("xyz"), value=0)
+        .interrogate()
+    )
+
+    # Check that eval_error is set
+    assert validation.validation_info[0].eval_error is True
+
+    # Check that no_columns_resolved note exists
+    notes = validation.get_notes(i=1)
+    assert notes is not None
+    assert "no_columns_resolved" in notes
+
+    # Check note content
+    note = validation.get_note(i=1, key="no_columns_resolved")
+    assert note is not None
+    assert "StartsWith" in note["text"]
+    assert "does not resolve to any columns" in note["text"]
+
+
+def test_column_not_found_note_expression_in_text():
+    """Test that the column expression appears correctly in the note text."""
+    from pointblank.column import ends_with
+
+    validation = (
+        Validate(data=pl.DataFrame({"a": [1, 2], "b": [3, 4]}))
+        .col_vals_lt(columns=ends_with("_total"), value=100)
+        .interrogate()
+    )
+
+    note_text = validation.get_note(i=1, key="no_columns_resolved", format="text")
+    assert note_text is not None
+    assert "EndsWith(text='_total'" in note_text
+    assert "does not resolve" in note_text
+
+
+def test_column_not_found_note_multilingual():
+    """Test that no_columns_resolved note works in multiple languages."""
+    from pointblank.column import contains
+
+    # Test French
+    validation_fr = (
+        Validate(data=pl.DataFrame({"a": [1, 2], "b": [3, 4]}), lang="fr")
+        .col_vals_gt(columns=contains("xyz"), value=0)
+        .interrogate()
+    )
+    note_fr = validation_fr.get_note(i=1, key="no_columns_resolved", format="markdown")
+    assert note_fr is not None
+    assert "L'expression de colonne" in note_fr or "colonne" in note_fr
+    assert "Contains" in note_fr
+
+    # Test Japanese
+    validation_ja = (
+        Validate(data=pl.DataFrame({"a": [1, 2], "b": [3, 4]}), lang="ja")
+        .col_vals_gt(columns=contains("xyz"), value=0)
+        .interrogate()
+    )
+    note_ja = validation_ja.get_note(i=1, key="no_columns_resolved", format="markdown")
+    assert note_ja is not None
+    assert "列式" in note_ja
+    assert "Contains" in note_ja
+
+
+def test_column_not_found_note_multiple_selectors():
+    """Test note generation with multiple different selector types."""
+    from pointblank.column import starts_with, ends_with, contains
+
+    validation = (
+        Validate(data=pl.DataFrame({"col1": [1, 2], "col2": [3, 4]}))
+        .col_vals_gt(columns=starts_with("xyz_"), value=0)
+        .col_vals_lt(columns=ends_with("_total"), value=100)
+        .col_vals_ne(columns=contains("missing"), value=0)
+        .interrogate()
+    )
+
+    # All three steps should have eval_error and no_columns_resolved notes
+    for i in range(1, 4):
+        assert validation.validation_info[i - 1].eval_error is True
+        note = validation.get_note(i=i, key="no_columns_resolved")
+        assert note is not None
+        assert "does not resolve to any columns" in note["text"]
+
+
+@pytest.mark.parametrize("tbl_fixture", ["tbl_pl", "tbl_pd"])
+def test_column_not_found_note_different_table_types(request, tbl_fixture):
+    """Test that no_columns_resolved note works with different table types."""
+    from pointblank.column import starts_with
+
+    tbl = request.getfixturevalue(tbl_fixture)
+
+    validation = (
+        Validate(data=tbl).col_vals_gt(columns=starts_with("nonexistent"), value=0).interrogate()
+    )
+
+    # Should have note regardless of table type
+    note = validation.get_note(i=1, key="no_columns_resolved")
+    assert note is not None
+    assert "StartsWith" in note["text"]
+    assert "does not resolve" in note["text"]
+
+
+def test_simple_column_not_found_note_basic():
+    """Test that column_not_found note is generated when a simple column name doesn't exist."""
+    validation = (
+        Validate(data=pl.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}))
+        .col_vals_gt(columns="zz", value=0)
+        .interrogate()
+    )
+
+    # Check that eval_error is set
+    assert validation.validation_info[0].eval_error is True
+
+    # Check that column_not_found note exists
+    notes = validation.get_notes(i=1)
+    assert notes is not None
+    assert "column_not_found" in notes
+
+    # Check note content
+    note = validation.get_note(i=1, key="column_not_found")
+    assert note is not None
+    assert "zz" in note["text"]
+    assert "does not match any columns in the table" in note["text"]
+
+
+def test_simple_column_not_found_note_multiple_validations():
+    """Test column_not_found notes for multiple missing columns."""
+    validation = (
+        Validate(data=pl.DataFrame({"a": [1, 2], "b": [3, 4]}))
+        .col_vals_gt(columns="missing_col1", value=0)
+        .col_vals_lt(columns="missing_col2", value=100)
+        .col_vals_ne(columns="missing_col3", value=0)
+        .interrogate()
+    )
+
+    # All three steps should have eval_error and column_not_found notes
+    for i, col_name in enumerate(["missing_col1", "missing_col2", "missing_col3"], start=1):
+        assert validation.validation_info[i - 1].eval_error is True
+        note = validation.get_note(i=i, key="column_not_found")
+        assert note is not None
+        assert col_name in note["text"]
+        assert "does not match any columns in the table" in note["text"]
+
+
+@pytest.mark.parametrize("tbl_fixture", ["tbl_pl", "tbl_pd"])
+def test_simple_column_not_found_note_different_table_types(request, tbl_fixture):
+    """Test that column_not_found note works with different table types for simple column names."""
+    tbl = request.getfixturevalue(tbl_fixture)
+
+    validation = Validate(data=tbl).col_vals_gt(columns="nonexistent_column", value=0).interrogate()
+
+    # Should have note regardless of table type
+    note = validation.get_note(i=1, key="column_not_found")
+    assert note is not None
+    assert "nonexistent_column" in note["text"]
+    assert "does not match any columns" in note["text"]
+
+
+def test_comparison_column_not_found_note_basic():
+    """Test that comparison_column_not_found note is generated for missing comparison columns."""
+
+    validation = (
+        Validate(data=pl.DataFrame({"a": [5, 6, 5], "b": [4, 2, 3]}))
+        .col_vals_gt(columns="a", value=col("missing_comparison"))
+        .interrogate()
+    )
+
+    # Check that eval_error is set
+    assert validation.validation_info[0].eval_error is True
+
+    # Check that comparison_column_not_found note exists
+    notes = validation.get_notes(i=1)
+    assert notes is not None
+    assert "comparison_column_not_found" in notes
+
+    # Check note content
+    note = validation.get_note(i=1, key="comparison_column_not_found")
+    assert note is not None
+    assert "missing_comparison" in note["text"]
+    assert "does not match any columns in the table" in note["text"]
+
+
+def test_comparison_column_not_found_note_between_left():
+    """Test comparison_column_not_found note for missing LEFT column in col_vals_between."""
+
+    validation = (
+        Validate(data=pl.DataFrame({"a": [5, 6, 5], "b": [4, 2, 3]}))
+        .col_vals_between(columns="a", left=col("missing_left"), right=10)
+        .interrogate()
+    )
+
+    # Check that eval_error is set
+    assert validation.validation_info[0].eval_error is True
+
+    # Check note content includes position
+    note = validation.get_note(i=1, key="comparison_column_not_found")
+    assert note is not None
+    assert "missing_left" in note["text"]
+    assert "for left=" in note["text"]
+    assert "does not match any columns" in note["text"]
+
+
+def test_comparison_column_not_found_note_between_right():
+    """Test comparison_column_not_found note for missing RIGHT column in col_vals_between."""
+
+    validation = (
+        Validate(data=pl.DataFrame({"a": [5, 6, 5], "b": [4, 2, 3]}))
+        .col_vals_between(columns="a", left=0, right=col("missing_right"))
+        .interrogate()
+    )
+
+    # Check that eval_error is set
+    assert validation.validation_info[0].eval_error is True
+
+    # Check note content includes position
+    note = validation.get_note(i=1, key="comparison_column_not_found")
+    assert note is not None
+    assert "missing_right" in note["text"]
+    assert "for right=" in note["text"]
+    assert "does not match any columns" in note["text"]
+
+
+def test_comparison_column_not_found_note_outside():
+    """Test comparison_column_not_found note for missing column in col_vals_outside."""
+
+    validation = (
+        Validate(data=pl.DataFrame({"a": [5, 6, 5], "b": [4, 2, 3]}))
+        .col_vals_outside(columns="a", left=col("missing_low"), right=100)
+        .interrogate()
+    )
+
+    # Check that eval_error is set
+    assert validation.validation_info[0].eval_error is True
+
+    # Check note content includes position
+    note = validation.get_note(i=1, key="comparison_column_not_found")
+    assert note is not None
+    assert "missing_low" in note["text"]
+    assert "for left=" in note["text"]
+
+
+def test_comparison_column_not_found_note_multilingual():
+    """Test that comparison_column_not_found note works in multiple languages."""
+
+    # Test French
+    validation_fr = (
+        Validate(data=pl.DataFrame({"a": [5, 6], "b": [4, 2]}), lang="fr")
+        .col_vals_gt(columns="a", value=col("missing"))
+        .interrogate()
+    )
+    note_fr = validation_fr.get_note(i=1, key="comparison_column_not_found", format="markdown")
+    assert note_fr is not None
+    assert "La colonne de comparaison fournie" in note_fr or "comparaison" in note_fr
+    assert "missing" in note_fr
+
+    # Test Japanese
+    validation_ja = (
+        Validate(data=pl.DataFrame({"a": [5, 6], "b": [4, 2]}), lang="ja")
+        .col_vals_gt(columns="a", value=col("missing"))
+        .interrogate()
+    )
+    note_ja = validation_ja.get_note(i=1, key="comparison_column_not_found", format="markdown")
+    assert note_ja is not None
+    assert "比較列" in note_ja
+    assert "missing" in note_ja
+
+
+def test_comparison_column_not_found_note_multiple_methods():
+    """Test comparison_column_not_found notes across different validation methods."""
+
+    validation = (
+        Validate(data=pl.DataFrame({"a": [5, 6, 5], "b": [4, 2, 3]}))
+        .col_vals_gt(columns="a", value=col("miss1"))
+        .col_vals_lt(columns="a", value=col("miss2"))
+        .col_vals_ge(columns="a", value=col("miss3"))
+        .interrogate()
+    )
+
+    # All three steps should have eval_error and comparison_column_not_found notes
+    for i, col_name in enumerate(["miss1", "miss2", "miss3"], start=1):
+        assert validation.validation_info[i - 1].eval_error is True
+        note = validation.get_note(i=i, key="comparison_column_not_found")
+        assert note is not None
+        assert col_name in note["text"]
+
+
+def test_column_error_notes_monospace_font():
+    """Test that column names and parameter names use monospace font in HTML notes."""
+
+    validation = (
+        Validate(data=pl.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}))
+        # Simple column error
+        .col_vals_not_null(columns="missing_col")
+        # Selector error
+        .col_vals_gt(columns=starts_with("xyz_"), value=0)
+        # Comparison column error without position
+        .col_vals_gt(columns="a", value=col("missing_comp"))
+        # Comparison column error with position
+        .col_vals_between(columns="a", left=col("missing_left"), right=10)
+        .interrogate()
+    )
+
+    # Check simple column error has monospace font
+    note_1 = validation.get_note(i=1, key="column_not_found", format="markdown")
+    assert "IBM Plex Mono" in note_1
+    assert "missing_col" in note_1
+
+    # Check selector error has monospace font
+    note_2 = validation.get_note(i=2, key="no_columns_resolved", format="markdown")
+    assert "IBM Plex Mono" in note_2
+    assert "StartsWith" in note_2
+
+    # Check comparison column error has monospace font for column name
+    note_3 = validation.get_note(i=3, key="comparison_column_not_found", format="markdown")
+    assert "IBM Plex Mono" in note_3
+    assert "missing_comp" in note_3
+
+    # Check comparison column error with position has monospace font for both column and parameter
+    note_4 = validation.get_note(i=4, key="comparison_column_not_found", format="markdown")
+    assert note_4.count("IBM Plex Mono") >= 2  # Should appear for both parameter and column
+    assert "missing_left" in note_4
+    assert "left=" in note_4
 
 
 def test_process_data_dataframe_passthrough_pandas():
@@ -10091,7 +11020,7 @@ def test_pointblank_config_class():
 
     assert (
         str(config)
-        == "PointblankConfig(report_incl_header=True, report_incl_footer=True, preview_incl_header=True)"
+        == "PointblankConfig(report_incl_header=True, report_incl_footer=True, report_incl_footer_timings=True, report_incl_footer_notes=True, preview_incl_header=True)"
     )
 
 
@@ -11163,11 +12092,18 @@ def test_parquet_pandas_fails_when_only_pandas_available():
 
 
 def test_connect_to_table_ibis_not_available():
+    # Patch it where it's actually called in the validate module
+    with patch("pointblank.validate._is_lib_present", return_value=False):
+        with pytest.raises(ImportError, match="The Ibis library is not installed"):
+            connect_to_table("duckdb://test.db::table")
+
+
+def test_print_database_tables_ibis_not_available():
     with patch("pointblank.validate._is_lib_present") as mock_is_lib:
         mock_is_lib.return_value = False  # Ibis not available
 
         with pytest.raises(ImportError, match="The Ibis library is not installed"):
-            connect_to_table("duckdb://test.db::table")
+            print_database_tables("duckdb://test.db")
 
 
 def test_connect_to_table_no_table_specified_with_tables():
@@ -11192,6 +12128,75 @@ def test_connect_to_table_no_table_specified_with_tables():
             assert "table2" in error_msg
             assert "table3" in error_msg
             assert "duckdb://test.db::table1" in error_msg
+
+
+def test_print_database_tables_table_specified():
+    with patch("pointblank.validate._is_lib_present") as mock_is_lib:
+        mock_is_lib.return_value = True
+
+        # Mock ibis module
+        mock_ibis = Mock()
+        mock_conn = Mock()
+        mock_ibis.connect.return_value = mock_conn
+
+        with patch.dict("sys.modules", {"ibis": mock_ibis}):
+            # This should trigger the error path for including table spec when not allowed
+            with pytest.raises(ValueError) as exc_info:
+                print_database_tables("duckdb:///superbadpath.ddb::fogel_table")
+
+            error_msg = str(exc_info.value)
+            assert (
+                "Connection string should not include table specification (::table_name)"
+                in error_msg
+            )
+            assert "You've supplied: duckdb:///superbadpath.ddb::fogel_table" in error_msg
+            assert (
+                "Expected format: 'duckdb:///path/to/database.ddb' (without ::table_name)"
+                in error_msg
+            )
+            assert "duckdb:///superbadpath.ddb::fogel_table" in error_msg
+
+
+def test_print_database_tables_names_returned():
+    pytest.importorskip("ibis")
+
+    # Create a temporary DuckDB database file
+    with tempfile.NamedTemporaryFile(suffix=".ddb", delete=False) as tmp_file:
+        temp_db_path = tmp_file.name
+
+    # Remove empty file so DuckDB can create proper database
+    os.unlink(temp_db_path)
+
+    try:
+        # Create and populate the database
+        conn = ibis.duckdb.connect(temp_db_path)
+
+        # Create test data
+        df_test = pl.DataFrame({"id": [1, 2, 3], "value": [10, 20, 30]})
+        tbl_ibis = ibis.memtable(df_test.to_pandas())
+
+        # Create multiple tables
+        conn.create_table("supercooltable_1", tbl_ibis, overwrite=True)
+        conn.create_table("supercooltable_2", tbl_ibis, overwrite=True)
+        conn.create_table("supercooltable_3", tbl_ibis, overwrite=True)
+        conn.disconnect()
+
+        # Test the actual function without mocking
+        # Use single slash for Windows absolute paths
+        connection_string = f"duckdb://{temp_db_path}"
+        table_names = print_database_tables(connection_string)
+
+        # Verify it returns the expected table names
+        assert isinstance(table_names, list)
+        assert len(table_names) == 3
+        assert "supercooltable_1" in table_names
+        assert "supercooltable_2" in table_names
+        assert "supercooltable_3" in table_names
+
+    finally:
+        # Clean up temporary file
+        if os.path.exists(temp_db_path):
+            os.unlink(temp_db_path)
 
 
 def test_connect_to_table_no_table_specified_empty_db():
@@ -11230,6 +12235,23 @@ def test_connect_to_table_backend_dependency_missing():
             assert "pip install 'ibis-framework[duckdb]'" in error_msg
 
 
+def test_print_database_tables_backend_dependency_missing():
+    with patch("pointblank.validate._is_lib_present") as mock_is_lib:
+        mock_is_lib.return_value = True
+
+        # Mock ibis module that raises backend-specific error
+        mock_ibis = Mock()
+        mock_ibis.connect.side_effect = Exception("sqlite not found")
+
+        with patch.dict("sys.modules", {"ibis": mock_ibis}):
+            with pytest.raises(ConnectionError) as exc_info:
+                print_database_tables("sqlite://test.db")
+
+            error_msg = str(exc_info.value)
+            assert "Missing SQLITE backend for Ibis" in error_msg
+            assert "pip install 'ibis-framework[sqlite]'" in error_msg
+
+
 def test_connect_to_table_invalid_connection_string_format():
     with patch("pointblank.validate._is_lib_present") as mock_is_lib:
         mock_is_lib.return_value = True
@@ -11265,6 +12287,184 @@ def test_connect_to_table_table_not_found():
 
             error_msg = str(exc_info.value)
             assert "Table 'nonexistent' not found in database" in error_msg
+
+
+def test_print_database_tables_filters_memtables():
+    """Test that memtable entries are filtered out from the results."""
+    pytest.importorskip("ibis")
+
+    with tempfile.NamedTemporaryFile(suffix=".ddb", delete=False) as tmp_file:
+        temp_db_path = tmp_file.name
+
+    os.unlink(temp_db_path)
+
+    try:
+        conn = ibis.duckdb.connect(temp_db_path)
+
+        # Create test data
+        df_test = pl.DataFrame({"id": [1, 2, 3], "value": [10, 20, 30]})
+        tbl_ibis = ibis.memtable(df_test.to_pandas())
+
+        # Create regular tables and one that contains "memtable" in the name
+        conn.create_table("a_table", tbl_ibis, overwrite=True)
+        conn.create_table("ibis_memtable_12345", tbl_ibis, overwrite=True)
+
+        # Close the connection
+        conn.disconnect()
+
+        connection_string = f"duckdb://{temp_db_path}"
+        table_names = print_database_tables(connection_string)
+
+        # Verify memtable is filtered out
+        assert isinstance(table_names, list)
+        assert "a_table" in table_names
+        assert "ibis_memtable_12345" not in table_names
+
+    finally:
+        if os.path.exists(temp_db_path):
+            os.unlink(temp_db_path)
+
+
+def test_print_database_tables_generic_connection_error():
+    """Test error handling for generic connection failures."""
+    with patch("pointblank.validate._is_lib_present") as mock_is_lib:
+        mock_is_lib.return_value = True
+
+        # Mock ibis module that raises a generic connection error
+        mock_ibis = Mock()
+        mock_ibis.connect.side_effect = Exception("Generic connection failure")
+
+        with patch.dict("sys.modules", {"ibis": mock_ibis}):
+            with pytest.raises(ConnectionError) as exc_info:
+                print_database_tables("duckdb://test.db")
+
+            error_msg = str(exc_info.value)
+            assert "Failed to connect using: duckdb://test.db" in error_msg
+            assert "Generic connection failure" in error_msg
+
+
+def test_connect_to_table_success():
+    """Test successful connection to a table."""
+    pytest.importorskip("ibis")
+
+    with tempfile.NamedTemporaryFile(suffix=".ddb", delete=False) as tmp_file:
+        temp_db_path = tmp_file.name
+
+    os.unlink(temp_db_path)
+
+    try:
+        # Create database with a table
+        conn = ibis.duckdb.connect(temp_db_path)
+        df_test = pl.DataFrame({"id": [1, 2, 3], "value": [10, 20, 30]})
+        tbl_ibis = ibis.memtable(df_test.to_pandas())
+        conn.create_table("test_table", tbl_ibis, overwrite=True)
+        conn.disconnect()
+
+        # Connect to the table
+        connection_string = f"duckdb://{temp_db_path}::test_table"
+        table = connect_to_table(connection_string)
+
+        # Verify it's a table object
+        assert table is not None
+        assert hasattr(table, "execute")  # Ibis tables have execute method
+
+        # Close the connection to the database before cleanup
+        # Get the backend connection and disconnect it
+        if hasattr(table, "_find_backend"):
+            backend = table._find_backend()
+            if hasattr(backend, "disconnect"):
+                backend.disconnect()
+
+    finally:
+        if os.path.exists(temp_db_path):
+            # Add a small delay to ensure file handle is released on Windows
+            import time
+
+            time.sleep(0.1)
+            try:
+                os.unlink(temp_db_path)
+            except PermissionError:
+                # If still locked, skip deletion (will be cleaned up by OS eventually)
+                pass
+
+
+def test_connect_to_table_table_not_found_with_available_tables():
+    """Test error when table not found but other tables exist."""
+    with patch("pointblank.validate._is_lib_present") as mock_is_lib:
+        mock_is_lib.return_value = True
+
+        # Mock ibis module
+        mock_ibis = Mock()
+        mock_conn = Mock()
+        mock_conn.table.side_effect = Exception("table 'nonexistent' does not exist")
+        mock_conn.list_tables.return_value = ["table1", "table2", "table3"]
+        mock_ibis.connect.return_value = mock_conn
+
+        with patch.dict("sys.modules", {"ibis": mock_ibis}):
+            with pytest.raises(ValueError) as exc_info:
+                connect_to_table("duckdb://test.db::nonexistent")
+
+            error_msg = str(exc_info.value)
+            assert "Table 'nonexistent' not found in database" in error_msg
+            assert "Available tables:" in error_msg
+            assert "table1" in error_msg
+            assert "table2" in error_msg
+            assert "table3" in error_msg
+
+
+def test_connect_to_table_generic_connection_error():
+    """Test generic connection error that's not backend-specific."""
+    with patch("pointblank.validate._is_lib_present") as mock_is_lib:
+        mock_is_lib.return_value = True
+
+        # Mock ibis module that raises a non-backend-specific error
+        mock_ibis = Mock()
+        mock_ibis.connect.side_effect = Exception("Network timeout")
+
+        with patch.dict("sys.modules", {"ibis": mock_ibis}):
+            with pytest.raises(ConnectionError) as exc_info:
+                connect_to_table("duckdb://test.db::table")
+
+            error_msg = str(exc_info.value)
+            assert "Failed to connect using: duckdb://test.db" in error_msg
+            assert "Network timeout" in error_msg
+
+
+def test_connect_to_table_no_table_spec_connection_fails():
+    """Test when connection fails in the 'no table specified' path."""
+    with patch("pointblank.validate._is_lib_present") as mock_is_lib:
+        mock_is_lib.return_value = True
+
+        # Mock ibis module that fails to connect
+        mock_ibis = Mock()
+        mock_ibis.connect.side_effect = Exception("Cannot connect to database")
+
+        with patch.dict("sys.modules", {"ibis": mock_ibis}):
+            with pytest.raises(ConnectionError) as exc_info:
+                connect_to_table("duckdb://invalid.db")  # No table spec
+
+            error_msg = str(exc_info.value)
+            assert "Failed to connect" in error_msg or "Cannot connect" in error_msg
+
+
+def test_connect_to_table_list_tables_raises_exception():
+    """Test when list_tables() raises an exception in no-table-spec path."""
+    with patch("pointblank.validate._is_lib_present") as mock_is_lib:
+        mock_is_lib.return_value = True
+
+        # Mock ibis module
+        mock_ibis = Mock()
+        mock_conn = Mock()
+        mock_conn.list_tables.side_effect = Exception("Permission denied")
+        mock_ibis.connect.return_value = mock_conn
+
+        with patch.dict("sys.modules", {"ibis": mock_ibis}):
+            with pytest.raises(ValueError) as exc_info:
+                connect_to_table("duckdb://test.db")  # No table spec
+
+            error_msg = str(exc_info.value)
+            assert "No table specified in connection string" in error_msg
+            assert "No tables found in the database or unable to list tables" in error_msg
 
 
 def test_process_connection_string_not_a_connection_string():
@@ -11739,6 +12939,8 @@ def test_missing_vals_tbl_no_fail_duckdb_table():
     missing_vals_tbl(nycflights)
 
 
+# TODO: Fix this test: great_tables has internal pandas dependencies that cannot be mocked
+@pytest.mark.skip(reason="TODO: Fix great_tables internal pandas dependency issue")
 def test_missing_vals_tbl_no_pandas():
     # Mock the absence of the pandas library
     with patch.dict(sys.modules, {"pandas": None}):
@@ -16023,9 +17225,13 @@ def test_set_tbl_error_handling():
     incompatible_validation = validation.set_tbl(table2)
     assert incompatible_validation is not None
 
-    # Test that interrogation fails gracefully with incompatible structure
-    with pytest.raises(Exception):  # Should raise an error during interrogation
-        incompatible_validation.interrogate()
+    # Test that interrogation handles incompatible structure gracefully with a note
+    result = incompatible_validation.interrogate()
+    assert result.validation_info[0].eval_error is True
+    # Should have a column_not_found note
+    note = result.get_note(i=1, key="column_not_found")
+    assert note is not None
+    assert "a" in note["text"]  # The missing column name
 
 
 def test_set_tbl_with_different_dataframe_libraries():
@@ -18501,4 +19707,396 @@ def test_column_selector_with_different_table_types():
         reinterrogated_polars = loaded_polars.interrogate()
         assert reinterrogated_polars.n_passed(scalar=True) == validation_polars.n_passed(
             scalar=True
+        )
+
+
+def test_threshold_notes_local_thresholds():
+    """Test that local threshold notes appear when step-specific thresholds differ from global."""
+
+    small_table = load_dataset(dataset="small_table")
+
+    validation = (
+        Validate(
+            data=small_table,
+            thresholds=Thresholds(warning=0.1, error=0.2, critical=0.3),
+            locale="en",
+        )
+        .col_vals_gt(columns="a", value=5)  # Uses global thresholds
+        .col_vals_between(
+            columns="d", left=0, right=10000, thresholds=Thresholds(warning=0.05, error=0.15)
+        )  # Local thresholds
+        .interrogate()
+    )
+
+    html = validation.get_tabular_report()._repr_html_()
+
+    # Check that local threshold note appears
+    assert "Step-specific thresholds set with" in html
+
+    # Check that the note includes W and E markers
+    assert ">W<" in html
+    assert ">E<" in html
+
+    # Check that the values appear (English uses period as decimal separator)
+    assert "0.05" in html
+    assert "0.15" in html
+
+
+def test_threshold_notes_reset_thresholds():
+    """Test that threshold reset notes appear when thresholds are explicitly set to empty."""
+
+    small_table = load_dataset(dataset="small_table")
+
+    validation = (
+        Validate(
+            data=small_table,
+            thresholds=Thresholds(warning=0.1, error=0.2, critical=0.3),
+            locale="en",
+        )
+        .col_vals_gt(columns="a", value=5)  # Uses global thresholds
+        .col_vals_not_null(columns="c", thresholds=Thresholds())  # Explicitly reset
+        .interrogate()
+    )
+
+    html = validation.get_tabular_report()._repr_html_()
+
+    # Check that threshold reset note appears
+    assert "Global thresholds explicitly not used" in html
+
+
+def test_threshold_notes_localization():
+    """Test that threshold notes are properly localized."""
+
+    small_table = load_dataset(dataset="small_table")
+
+    # Test French locale
+    validation_fr = (
+        Validate(
+            data=small_table,
+            thresholds=Thresholds(warning=0.1, error=0.2, critical=0.3),
+            locale="fr",
+        )
+        .col_vals_not_null(columns="c", thresholds=Thresholds())
+        .interrogate()
+    )
+
+    html_fr = validation_fr.get_tabular_report()._repr_html_()
+    assert "Seuils globaux explicitement non utilisés" in html_fr
+
+    # Test German locale
+    validation_de = (
+        Validate(
+            data=small_table,
+            thresholds=Thresholds(warning=0.1, error=0.2, critical=0.3),
+            locale="de",
+        )
+        .col_vals_not_null(columns="c", thresholds=Thresholds())
+        .interrogate()
+    )
+
+    html_de = validation_de.get_tabular_report()._repr_html_()
+    assert "Globale Schwellenwerte für diesen Schritt explizit nicht verwendet" in html_de
+
+
+def test_threshold_notes_locale_number_formatting():
+    """Test that threshold note values use locale-specific number formatting."""
+
+    small_table = load_dataset(dataset="small_table")
+
+    # Test German locale (uses comma as decimal separator)
+    validation_de = (
+        Validate(
+            data=small_table,
+            thresholds=Thresholds(warning=0.1, error=0.2, critical=0.3),
+            locale="de",
+        )
+        .col_vals_between(
+            columns="d", left=0, right=10000, thresholds=Thresholds(warning=0.05, error=0.15)
+        )
+        .interrogate()
+    )
+
+    html_de = validation_de.get_tabular_report()._repr_html_()
+
+    # German uses comma as decimal separator
+    assert "0,05" in html_de
+    assert "0,15" in html_de
+
+    # Test French locale (also uses comma as decimal separator)
+    validation_fr = (
+        Validate(
+            data=small_table,
+            thresholds=Thresholds(warning=0.1, error=0.2, critical=0.3),
+            locale="fr",
+        )
+        .col_vals_between(
+            columns="d", left=0, right=10000, thresholds=Thresholds(warning=0.25, error=0.5)
+        )
+        .interrogate()
+    )
+
+    html_fr = validation_fr.get_tabular_report()._repr_html_()
+
+    # French uses comma as decimal separator
+    assert "0,25" in html_fr
+    assert "0,5" in html_fr
+
+
+def test_threshold_notes_no_note_when_thresholds_match():
+    """Test that no threshold note appears when step thresholds match global thresholds."""
+
+    small_table = load_dataset(dataset="small_table")
+
+    global_thresholds = Thresholds(warning=0.1, error=0.2, critical=0.3)
+
+    validation = (
+        Validate(
+            data=small_table,
+            thresholds=global_thresholds,
+            locale="en",
+        )
+        .col_vals_gt(columns="a", value=5)  # Uses global thresholds
+        .col_vals_between(
+            columns="d", left=0, right=10000, thresholds=global_thresholds
+        )  # Same as global
+        .interrogate()
+    )
+
+    html = validation.get_tabular_report()._repr_html_()
+
+    # No threshold notes should appear
+    assert "Step-specific thresholds set with" not in html
+    assert "Global thresholds explicitly not used" not in html
+
+
+def test_config_footer_timings_and_notes():
+    """Test footer timings and notes configuration options."""
+
+    # Test default configuration includes selected fields
+    config = PointblankConfig()
+    assert config.report_incl_footer_timings is True
+    assert config.report_incl_footer_notes is True
+
+    # Test configuration with the two fields disabled
+    config_no_footer_details = PointblankConfig(
+        report_incl_header=True,
+        report_incl_footer=True,
+        report_incl_footer_timings=False,
+        report_incl_footer_notes=False,
+        preview_incl_header=True,
+    )
+    assert config_no_footer_details.report_incl_footer_timings is False
+    assert config_no_footer_details.report_incl_footer_notes is False
+
+    # Test string representation for inclusion of the fields
+    str_repr = str(config)
+    assert "report_incl_footer_timings=True" in str_repr
+    assert "report_incl_footer_notes=True" in str_repr
+
+
+def test_get_tabular_report_footer_timings_control():
+    """Test that incl_footer_timings= parameter controls timing display in reports."""
+
+    small_table = load_dataset(dataset="small_table")
+
+    # Create validation with an error to trigger a note
+    validation = (
+        Validate(data=small_table, label="Test Validation")
+        .col_vals_gt(columns="d", value=100)
+        .col_vals_regex(columns="invalid_column", pattern=r"test")
+        .interrogate()
+    )
+
+    # Test with default settings (timings should be present)
+    html_with_timings = validation.get_tabular_report()._repr_html_()
+
+    # Timing information is rendered with specific styling in _create_table_time_html
+    assert "font-variant-numeric: tabular-nums" in html_with_timings
+    assert "solid 1px #999999" in html_with_timings  # Part of timing badge styling
+
+    # Test with timings disabled
+    html_no_timings = validation.get_tabular_report(incl_footer_timings=False)._repr_html_()
+
+    # When timings are disabled, there should be fewer timing-related style elements so
+    # count occurrences to verify reduction
+    timing_style_count_with = html_with_timings.count("font-variant-numeric: tabular-nums")
+    timing_style_count_without = html_no_timings.count("font-variant-numeric: tabular-nums")
+
+    assert timing_style_count_without < timing_style_count_with
+
+
+def test_get_tabular_report_footer_notes_control():
+    """Test that incl_footer_notes= parameter controls notes display in reports."""
+
+    small_table = load_dataset(dataset="small_table")
+
+    # Create validation with an error to trigger a note
+    validation = (
+        Validate(data=small_table, label="Test Validation")
+        .col_vals_gt(columns="d", value=100)
+        .col_vals_regex(columns="invalid_column", pattern=r"test")
+        .interrogate()
+    )
+
+    # Test with default settings (notes should be present)
+    html_with_notes = validation.get_tabular_report()._repr_html_()
+
+    assert "<strong>Notes</strong>" in html_with_notes
+    # Notes include step references with small caps formatting
+    assert "font-variant: small-caps" in html_with_notes or "Step" in html_with_notes.lower()
+
+    # Test with notes disabled
+    html_no_notes = validation.get_tabular_report(incl_footer_notes=False)._repr_html_()
+
+    assert "<strong>Notes</strong>" not in html_no_notes
+
+
+def test_get_tabular_report_footer_controls_combined():
+    """Test combinations of footer timing and notes controls."""
+
+    small_table = load_dataset(dataset="small_table")
+
+    validation = (
+        Validate(data=small_table, label="Test Validation")
+        .col_vals_gt(columns="d", value=100)
+        .col_vals_regex(columns="invalid_column", pattern=r"test")
+        .interrogate()
+    )
+
+    # Test with both timings and notes enabled (default)
+    html_both = validation.get_tabular_report()._repr_html_()
+
+    assert "font-variant-numeric: tabular-nums" in html_both
+    assert "<strong>Notes</strong>" in html_both
+
+    # Test with both disabled but footer still enabled
+    html_neither = validation.get_tabular_report(
+        incl_footer_timings=False, incl_footer_notes=False
+    )._repr_html_()
+    timing_count = html_neither.count("font-variant-numeric: tabular-nums")
+
+    assert "<strong>Notes</strong>" not in html_neither
+    assert timing_count < html_both.count("font-variant-numeric: tabular-nums")
+
+    # Test with timings enabled, notes disabled
+    html_timings_only = validation.get_tabular_report(incl_footer_notes=False)._repr_html_()
+
+    assert "font-variant-numeric: tabular-nums" in html_timings_only
+    assert "<strong>Notes</strong>" not in html_timings_only
+
+    # Test with notes enabled, timings disabled
+    html_notes_only = validation.get_tabular_report(incl_footer_timings=False)._repr_html_()
+
+    assert "<strong>Notes</strong>" in html_notes_only
+
+
+def test_global_config_footer_controls():
+    """Test that global config settings for footer controls work correctly."""
+
+    small_table = load_dataset(dataset="small_table")
+
+    validation = (
+        Validate(data=small_table, label="Test Validation")
+        .col_vals_gt(columns="d", value=100)
+        .col_vals_regex(columns="invalid_column", pattern=r"test")
+        .interrogate()
+    )
+
+    # Save original config
+    original_config = PointblankConfig(
+        report_incl_header=global_config.report_incl_header,
+        report_incl_footer=global_config.report_incl_footer,
+        report_incl_footer_timings=global_config.report_incl_footer_timings,
+        report_incl_footer_notes=global_config.report_incl_footer_notes,
+        preview_incl_header=global_config.preview_incl_header,
+    )
+
+    try:
+        # Set global config to disable timings
+        config(
+            report_incl_header=True,
+            report_incl_footer=True,
+            report_incl_footer_timings=False,
+            report_incl_footer_notes=True,
+            preview_incl_header=True,
+        )
+
+        # Report should respect global config
+        html = validation.get_tabular_report()._repr_html_()
+        timing_count = html.count("font-variant-numeric: tabular-nums")
+        assert "<strong>Notes</strong>" in html
+        # Should have fewer timing elements
+        assert timing_count < 3
+
+        # Set global config to disable notes
+        config(
+            report_incl_header=True,
+            report_incl_footer=True,
+            report_incl_footer_timings=True,
+            report_incl_footer_notes=False,
+            preview_incl_header=True,
+        )
+
+        html = validation.get_tabular_report()._repr_html_()
+        assert "font-variant-numeric: tabular-nums" in html
+        assert "<strong>Notes</strong>" not in html
+
+    finally:
+        # Restore original config
+        config(
+            report_incl_header=original_config.report_incl_header,
+            report_incl_footer=original_config.report_incl_footer,
+            report_incl_footer_timings=original_config.report_incl_footer_timings,
+            report_incl_footer_notes=original_config.report_incl_footer_notes,
+            preview_incl_header=original_config.preview_incl_header,
+        )
+
+
+def test_footer_controls_override_global_config():
+    """Test that method parameters override global config settings."""
+
+    small_table = load_dataset(dataset="small_table")
+
+    validation = (
+        Validate(data=small_table, label="Test Validation")
+        .col_vals_gt(columns="d", value=100)
+        .col_vals_regex(columns="invalid_column", pattern=r"test")
+        .interrogate()
+    )
+
+    # Save original config
+    original_config = PointblankConfig(
+        report_incl_header=global_config.report_incl_header,
+        report_incl_footer=global_config.report_incl_footer,
+        report_incl_footer_timings=global_config.report_incl_footer_timings,
+        report_incl_footer_notes=global_config.report_incl_footer_notes,
+        preview_incl_header=global_config.preview_incl_header,
+    )
+
+    try:
+        # Set global config to disable both
+        config(
+            report_incl_header=True,
+            report_incl_footer=True,
+            report_incl_footer_timings=False,
+            report_incl_footer_notes=False,
+            preview_incl_header=True,
+        )
+
+        # Override with method parameters to enable both
+        html = validation.get_tabular_report(
+            incl_footer_timings=True, incl_footer_notes=True
+        )._repr_html_()
+
+        assert "font-variant-numeric: tabular-nums" in html
+        assert "<strong>Notes</strong>" in html
+
+    finally:
+        # Restore original config
+        config(
+            report_incl_header=original_config.report_incl_header,
+            report_incl_footer=original_config.report_incl_footer,
+            report_incl_footer_timings=original_config.report_incl_footer_timings,
+            report_incl_footer_notes=original_config.report_incl_footer_notes,
+            preview_incl_header=original_config.preview_incl_header,
         )

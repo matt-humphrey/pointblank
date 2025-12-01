@@ -2,7 +2,7 @@
 
 <a href="https://posit-dev.github.io/pointblank/"><img src="https://posit-dev.github.io/pointblank/assets/pointblank_logo.svg" width="75%"/></a>
 
-_아름답고 강력한 데이터 검증_
+_데이터 품질 평가 및 모니터링을 위한 데이터 검증 툴킷_
 
 [![Python Versions](https://img.shields.io/pypi/pyversions/pointblank.svg)](https://pypi.python.org/pypi/pointblank)
 [![PyPI](https://img.shields.io/pypi/v/pointblank)](https://pypi.org/project/pointblank/#history)
@@ -309,7 +309,7 @@ pb run validation.py --exit-code
 - **실용적인 출력**: 필요한 것을 정확히 얻기: 개수, 추출, 요약 또는 완전한 보고서
 - **유연한 배포**: 노트북, 스크립트 또는 데이터 파이프라인에서 사용
 - **맞춤형 설정**: 특정 요구에 맞게 검증 단계와 보고 조정
-- **국제화**: 보고서는 영어, 스페인어, 프랑스어, 독일어 등 20개 이상의 언어로 생성 가능
+- **국제화**: 보고서는 영어, 스페인어, 프랑스어, 독일어 등 40개의 언어로 생성 가능
 
 ## 문서 및 예제
 

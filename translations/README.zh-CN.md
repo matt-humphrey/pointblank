@@ -2,23 +2,9 @@
 
 <a href="https://posit-dev.github.io/pointblank/"><img src="https://posit-dev.github.io/pointblank/assets/pointblank_logo.svg" width="75%"/></a>
 
-\_数据验证，既美观又强**运行基本验证**
+_用于评估和监控数据质量的数据验证工具包_
 
-````bash
-# 检查重复行
-```bash
-# 检查重复行
-pb validate small_table --check rows-distinct
-
-# 直接从 GitHub 验证数据
-pb validate "https://github.com/user/repo/blob/main/sales.csv" --check col-vals-not-null --column customer_id
-
-# 验证 Parquet 数据集中没有空值
-pb validate "data/*.parquet" --check col-vals-not-null --column a
-
-# 提取失败的数据进行调试
-pb validate small_table --check col-vals-gt --column a --value 5 --show-extract
-```
+[![Python Versions](https://img.shields.io/pypi/pyversions/pointblank.svg)](https://pypi.python.org/pypi/pointblank)
 [![PyPI](https://img.shields.io/pypi/v/pointblank)](https://pypi.org/project/pointblank/#history)
 [![PyPI Downloads](https://img.shields.io/pypi/dm/pointblank)](https://pypistats.org/packages/pointblank)
 [![Conda Version](https://img.shields.io/conda/vn/conda-forge/pointblank.svg)](https://anaconda.org/conda-forge/pointblank)
@@ -320,7 +306,7 @@ pb run validation.py --exit-code
 - **实用的输出**: 获取您所需的内容：计数、提取、摘要或完整报告
 - **灵活部署**: 可用于笔记本、脚本或数据管道
 - **可定制**: 根据您的特定需求定制验证步骤和报告
-- **国际化**: 报告可以用超过 20 种语言生成，包括英语、西班牙语、法语和德语
+- **国际化**: 报告可以用 40 种语言生成，包括英语、西班牙语、法语和德语
 
 ## 文档和示例
 
@@ -407,4 +393,3 @@ Pointblank 基于 MIT 许可证授权。
 ## 🏛️ 治理
 
 该项目主要由 [Rich Iannone](https://bsky.app/profile/richmeister.bsky.social) 维护。其他作者偶尔也会协助完成这些任务。
-````
